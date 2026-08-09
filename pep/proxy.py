@@ -12,9 +12,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+import uvicorn
 from fastapi import FastAPI, Header, Request
 from pydantic import BaseModel
 
+from pep.admin import admin_app
 from pep.bypass_proxy import serve as serve_bypass_proxy
 from pep.normalize import normalize_url
 from pep.pipeline import ACTION_MAP, BUNDLE, PipelineResult, extract_target, run_pipeline
@@ -22,6 +24,7 @@ from policy.engine import EXECUTABLE_DECISIONS, Decision
 
 EVENTSTORE_URL = os.environ.get("EVENTSTORE_URL", "http://eventstore:8090")
 SCHEMA_VERSION = "1.0"
+ADMIN_PORT = int(os.environ.get("ADMIN_PORT", "8079"))
 
 # WHY this exists: durable storage (the POST to eventstore below) and container-log observability
 # are two different failure domains — `docker compose logs pep` was previously blind to every
@@ -39,9 +42,18 @@ async def _lifespan(_app: FastAPI):
     # WHY a background task in this process rather than a second container: the bypass proxy is
     # the same enforcement point, just listening on a second port (M1 gap #3 resolution) — it
     # shares the PEP's event-logging path and has no state of its own to isolate.
-    task = asyncio.create_task(serve_bypass_proxy())
+    bypass_task = asyncio.create_task(serve_bypass_proxy())
+    # WHY host="127.0.0.1", not "0.0.0.0": the admin API (quarantine list/release) must be
+    # unreachable from agent-net even though this process shares that network with the agent —
+    # loopback binding means only something inside this container's own network namespace (a
+    # human running `docker compose exec pep ...`) can ever reach it. See pep/admin.py's WHY.
+    admin_server = uvicorn.Server(
+        uvicorn.Config(admin_app, host="127.0.0.1", port=ADMIN_PORT, log_level="warning")
+    )
+    admin_task = asyncio.create_task(admin_server.serve())
     yield
-    task.cancel()
+    bypass_task.cancel()
+    admin_task.cancel()
 
 
 app = FastAPI(title="AgentFW PEP", lifespan=_lifespan)

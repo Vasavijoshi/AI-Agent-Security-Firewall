@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 import pep.pipeline as pipeline
+import pep.quarantine as quarantine
 import risk.scorer as risk_scorer
 from identity.tokens import generate_keypair, mint_token
 from policy.engine import Decision
@@ -24,8 +25,10 @@ PEER_IP = "10.0.1.5"
 
 @pytest.fixture(autouse=True)
 def _reset_process_state():
-    """Pipeline and risk-scorer behavioral state is process-lifetime, in-memory (documented in
-    both modules). Tests must not leak taint/behavioral state into each other."""
+    """Pipeline, risk-scorer, and quarantine state are all process-lifetime, in-memory (documented
+    in each module). Tests must not leak taint/behavioral/quarantine state into each other — a
+    threat-intel-hit test earlier in the file would otherwise get every later test in this same
+    module denied with AGENT_QUARANTINED, since they all share CONTAINER_ID as their identity."""
     pipeline._SESSION_TAINT.clear()
     risk_scorer._SEEN_BY_AGENT.clear()
     risk_scorer._SEEN_BY_ORG.clear()
@@ -33,6 +36,8 @@ def _reset_process_state():
     risk_scorer._LAST_TOOL.clear()
     risk_scorer._SEEN_BIGRAMS.clear()
     risk_scorer._DENIAL_STREAK.clear()
+    quarantine._QUARANTINED.clear()
+    quarantine._DENIAL_TIMES.clear()
     yield
 
 

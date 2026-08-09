@@ -134,7 +134,9 @@ agentfw/
 ├── .github/workflows/ci.yml
 ├── docs/{architecture.md,threat-model.md,demo.md}
 ├── agent/{loop.py,tools.py,providers.py,prompts/,main.py}   # main.py: container entrypoint, added M1
-├── pep/{proxy.py,pipeline.py,normalize.py}
+├── pep/{proxy.py,pipeline.py,normalize.py,bypass_proxy.py,quarantine.py,admin.py}
+│    # bypass_proxy.py: M1 gap #3, the :8081 catch-all. quarantine.py + admin.py: pre-M3 round 2,
+│    # the quarantine set + its loopback-only (127.0.0.1) manual-release surface.
 ├── policy/{engine.py,compiler.py,bundles/default.yaml}
 ├── identity/{issuer.py,tokens.py}   # tokens.py split out M2: pure Ed25519 mint/verify, no
 │                                      # FastAPI/Docker-socket deps, so pep can import it standalone
@@ -240,6 +242,21 @@ startup, called by `attacks/run_all.py` and `evals/score.py`; the eval verdict t
 scorer. Also: the M1 gap #3 bypass-catch listener (`pep/bypass_proxy.py`) now mirrors every event
 to the PEP's own stdout logger, not just the eventstore POST — `docker compose logs pep` was
 verified blind to bypass denials until this fix.
+
+**Pre-M3 ruling, round 2** (two fixes after the round-1 Docker verification): (1) identity tokens
+now carry a stable `service` claim (the compose service name) alongside the ephemeral
+`container_id` — `pep/pipeline.py` uses it as risk scoring's and quarantine's key instead of the
+per-restart container id, which is what makes per-agent baseline seeding actually possible;
+`risk/baseline.jsonl`'s research_agent lines now carry `agent_id: "agent"` and
+`RiskScorer.warm_up()` seeds `_SEEN_BY_AGENT` from it, verified by a test that a registered
+agent's first live call does not fire `DEST_NEVER_SEEN_BY_AGENT`. (2) QUARANTINE implemented for
+real: `pep/quarantine.py` holds the quarantine set + a 60-second denial-rate window, entered
+automatically on risk CRITICAL band / a threat-intel hit / 5+ denials in 60s, checked as an
+absolute gate in `pep/pipeline.py` before any policy/risk work runs on a call; exit is manual
+only via `pep/admin.py`, served on its own loopback-only (127.0.0.1) uvicorn instance so a
+quarantined agent — reachable to the main PEP API over agent-net — cannot release itself.
+RATE_LIMIT and REQUIRE_APPROVAL remain designed-not-implemented, documented in the README's
+"Decision lattice — implementation status" table rather than left to look finished.
 
 **M3 — The proof.** 8 attack scripts (A1 unauthorized API, A2 exfiltration, A3 restricted DB, A4 lateral movement, A5 malicious tool, A6 **indirect prompt injection**, A7 privilege escalation, A8 **HTTP_PROXY bypass attempt** — resolved M2, exercises `pep/bypass_proxy.py`); eval corpora (≥60 attack, ≥60 benign cases); scorer reporting block rate, false-positive rate, friction rate, and latency percentiles; Streamlit dashboard.
 *Done when:* `attacks/run_all.py` prints 8 blocks with reasons, and `evals/score.py` prints measured numbers.

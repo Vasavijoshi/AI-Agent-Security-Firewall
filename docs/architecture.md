@@ -172,11 +172,15 @@ Known, documented simplifications — each named at its point of use rather than
   where it was externally verified, not in every environment this code has been edited in.
 - **Risk scoring's behavioral state is in-memory and per-process** (`risk/scorer.py`) — destination
   novelty, call-chain bigrams, rate, and denial streaks all reset on restart. `risk/baseline.jsonl`
-  + `RiskScorer.warm_up()` seed this from ~200 replayed benign events at startup so a freshly
-  booted stack doesn't score every first call as anomalous purely from cold-start novelty.
-- **RATE_LIMIT executes without actually throttling**, and **REQUIRE_APPROVAL/QUARANTINE have no
-  workflow behind them** (no approval queue, no quarantine automation) — they simply don't execute.
-  Honest scope, not a finished feature.
+  + `RiskScorer.warm_up()` seed this from ~200 replayed benign events at startup, including
+  per-agent state for the one identity with a real `AGENT_REGISTRY` entry, so a freshly booted
+  stack doesn't score every first call as anomalous purely from cold-start novelty.
+- **QUARANTINE is implemented**: entry is automatic (risk CRITICAL band, a threat-intel hit, or
+  5+ denials in 60s — `pep/pipeline.py`), exit is manual only via a loopback-only admin endpoint
+  (`pep/admin.py`, `pep/quarantine.py`) — never a timer. **RATE_LIMIT and REQUIRE_APPROVAL remain
+  designed, not implemented**: RATE_LIMIT executes without actually throttling, REQUIRE_APPROVAL
+  doesn't execute but has no approval workflow to eventually let it through either. See the
+  README's "Decision lattice — implementation status" table for the full breakdown.
 - **The bypass-catch listener** (`pep/bypass_proxy.py`, port 8081) denies every HTTP_PROXY/
   HTTPS_PROXY-directed request outright and logs `decision=DENY reason=BYPASS_ATTEMPTED` — both to
   the eventstore and to the PEP's own stdout, so `docker compose logs pep` shows it even if the

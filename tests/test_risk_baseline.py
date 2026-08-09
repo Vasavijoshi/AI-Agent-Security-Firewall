@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 
+import pep.pipeline as pipeline
+import pep.quarantine as quarantine
 import risk.scorer as risk_scorer
+from identity.tokens import generate_keypair, mint_token
 from risk.scorer import RiskScorer
 
 
@@ -15,6 +18,9 @@ def _reset_state():
     risk_scorer._LAST_TOOL.clear()
     risk_scorer._SEEN_BIGRAMS.clear()
     risk_scorer._DENIAL_STREAK.clear()
+    pipeline._SESSION_TAINT.clear()
+    quarantine._QUARANTINED.clear()
+    quarantine._DENIAL_TIMES.clear()
 
 
 def test_warm_up_replays_the_real_baseline_file():
@@ -39,10 +45,71 @@ def test_warm_up_suppresses_dest_unknown_to_org_for_a_seeded_destination():
     )
     codes = {f.code for f in result.factors}
     assert "DEST_UNKNOWN_TO_ORG" not in codes
-    # WHY DEST_NEVER_SEEN_BY_AGENT is still expected: agent_id-level history can't be pre-seeded
-    # for an agent_id that doesn't exist until the live agent attests — see RiskScorer.warm_up()'s
-    # docstring. This is the documented, honest partial improvement, not a bug.
+    # WHY DEST_NEVER_SEEN_BY_AGENT is still expected here specifically: "brand-new-agent-id" has no
+    # entry in identity/issuer.py's AGENT_REGISTRY and never will — it's not a stable workload key
+    # anything could have pre-seeded. A genuinely unregistered identity still pays this (smaller)
+    # penalty on its first call, which is correct. A *registered* agent's own stable key (the
+    # "agent" service, in this project) gets full per-agent seeding — see the two tests below.
     assert "DEST_NEVER_SEEN_BY_AGENT" in codes
+
+
+def test_warm_up_seeds_per_agent_destination_for_the_registered_agent():
+    """risk/baseline.jsonl carries "agent_id": "agent" on its research_agent lines — the one role
+    with a real AGENT_REGISTRY entry — so RiskScorer.warm_up() must populate _SEEN_BY_AGENT["agent"]
+    directly, not just _SEEN_BY_ORG."""
+    _reset_state()
+    RiskScorer.warm_up()
+    assert "api.trusted-news.com" in risk_scorer._SEEN_BY_AGENT.get("agent", set())
+
+    result = risk_scorer.score(
+        agent_id="agent",
+        role="research_agent",
+        tool="http.get",
+        destination_key="api.trusted-news.com",
+        action="read",
+        data_class="internal",
+        session_taint="clean",
+        threat_intel_hit=False,
+    )
+    codes = {f.code for f in result.factors}
+    assert "DEST_UNKNOWN_TO_ORG" not in codes
+    assert "DEST_NEVER_SEEN_BY_AGENT" not in codes
+
+
+def test_registered_agents_first_live_call_does_not_fire_dest_never_seen_by_agent():
+    """End-to-end through the real pipeline (AGENTFW_CONTEXT.md pre-M3 ruling, gap #2): a token
+    minted with the "agent" service claim — exactly what identity/issuer.py would mint for the one
+    real registered agent — must not pay DEST_NEVER_SEEN_BY_AGENT on a baseline-seeded destination,
+    even on its very first call after a fresh process start (simulated here by resetting all
+    state, then warming up, then making exactly one call)."""
+    _reset_state()
+    RiskScorer.warm_up()
+
+    private_key, public_key = generate_keypair()
+    pipeline._ISSUER_PUBLIC_KEY = public_key
+    token = mint_token(
+        {
+            "spiffe_id": "spiffe://agentfw.internal/ns/research_agent/agent/deadbeefcafe1",
+            "role": "research_agent",
+            "container_id": "deadbeefcafe1234567890abcdef",
+            "image_digest": "sha256:deadbeef",
+            "service": "agent",
+            "attested_ip": "10.0.1.5",
+        },
+        private_key,
+    )
+
+    result = pipeline.run_pipeline(
+        token=token,
+        peer_ip="10.0.1.5",
+        session_id="s1",
+        tool="http.get",
+        arguments={"url": "https://api.trusted-news.com/x"},
+    )
+    codes = {f["code"] for f in result.risk_factors}
+    assert "DEST_NEVER_SEEN_BY_AGENT" not in codes
+    assert "DEST_UNKNOWN_TO_ORG" not in codes
+    pipeline._ISSUER_PUBLIC_KEY = None
 
 
 def test_warm_up_suppresses_unseen_bigram_for_a_seeded_role_sequence(tmp_path):

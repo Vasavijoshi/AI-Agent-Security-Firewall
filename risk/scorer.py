@@ -241,19 +241,22 @@ class RiskScorer:
         WHY this does NOT call record_outcome() for each line: record_outcome() also feeds
         _CALL_TIMES (a 60-second rate window) and _DENIAL_STREAK (recency-relative) — stuffing
         ~200 historical events into "the last 60 seconds" at process start would itself trigger a
-        false RATE_ANOMALY for every role, the opposite of what warming up is for. Only the
-        state that genuinely means "has this been seen before, ever" gets seeded: org-wide
-        destination novelty (agent-independent, so it applies to any future agent regardless of
-        which container attests) and per-role tool-chain bigrams (AGENTFW_CONTEXT.md's identity
-        model keys _LAST_TOOL/_SEEN_BIGRAMS by role, not by the ephemeral per-restart agent_id, so
-        this seeding is durable across the real agent's container restarts).
+        false RATE_ANOMALY for every role, the opposite of what warming up is for. Only the state
+        that genuinely means "has this been seen before, ever" gets seeded: org-wide destination
+        novelty, per-role tool-chain bigrams, and — for agents with a real entry in
+        identity/issuer.py's AGENT_REGISTRY — per-agent destination novelty too.
 
-        WHY DEST_NEVER_SEEN_BY_AGENT is only partly addressed, and that's honest, not a bug: it's
-        keyed by agent_id, which is only known once the live agent actually attests (after this
-        function has already run at process startup) — there is no way to pre-seed a per-agent set
-        for an agent_id that doesn't exist yet. Seeding _SEEN_BY_ORG still downgrades a brand-new
-        agent's first call from the +15 DEST_UNKNOWN_TO_ORG penalty to the smaller +10
-        DEST_NEVER_SEEN_BY_AGENT one, which alone is below the MODERATE band threshold.
+        WHY per-agent seeding is possible at all despite agent identity only being confirmed at
+        attestation time: identity/issuer.py mints tokens with a stable "service" claim (the
+        compose service name, e.g. "agent") alongside the ephemeral per-restart container_id —
+        pep/pipeline.py uses that stable claim, not the container_id, as risk scoring's agent_id
+        (see its own WHY comment). The registry maps that same stable name to a role, so it's
+        knowable — and seedable — before any container has attested. risk/baseline.jsonl carries
+        an explicit "agent_id" field on lines for roles that have one (currently just
+        research_agent, via the "agent" service); roles with no deployed service (finance/support/
+        admin_agent) have no stable identity to seed against yet, so their lines only contribute
+        org- and role-level state, same as before. This is a real, not partial, fix for any
+        registered agent — the earlier "only partly addressed" caveat no longer applies to them.
         """
         count = 0
         for line in Path(path).read_text(encoding="utf-8").splitlines():
@@ -264,9 +267,12 @@ class RiskScorer:
             role = event["role"]
             tool = event["tool"]
             destination_key = event.get("destination_key")
+            agent_id = event.get("agent_id")
 
             if destination_key is not None:
                 _SEEN_BY_ORG.add(destination_key)
+                if agent_id is not None:
+                    _SEEN_BY_AGENT.setdefault(agent_id, set()).add(destination_key)
 
             last = _LAST_TOOL.get(role)
             if last is not None:

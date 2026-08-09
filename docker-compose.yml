@@ -75,6 +75,9 @@ services:
       EVENTSTORE_URL: http://eventstore:8090
       IDENTITY_ISSUER_URL: http://identity:8082
       POLICY_BUNDLE_PATH: /app/policy/bundles/default.yaml
+      # ADMIN_PORT (default 8079): quarantine list/release, bound to 127.0.0.1 inside this
+      # container (pep/admin.py) — deliberately not published here. Reach it with
+      # `docker compose exec pep curl http://localhost:8079/admin/quarantine`.
     depends_on:
       eventstore:
         condition: service_healthy

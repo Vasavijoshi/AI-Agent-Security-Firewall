@@ -93,61 +93,61 @@
 {"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
 {"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
 {"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "math.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "math.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "math.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "math.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "math.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "math.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "math.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org"}
-{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "math.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "math.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "math.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "math.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "math.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "math.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "math.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org", "agent_id": "agent"}
+{"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org", "agent_id": "agent"}
 {"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
 {"role": "support_agent", "tool": "db.query", "destination_key": "customers"}
 {"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}

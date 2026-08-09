@@ -9,6 +9,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 import pep.pipeline as pipeline
+import pep.quarantine as quarantine
 import risk.scorer as risk_scorer
 from identity.tokens import generate_keypair, mint_token
 from pep.normalize import normalize_url
@@ -29,6 +30,8 @@ def _reset_process_state():
     risk_scorer._LAST_TOOL.clear()
     risk_scorer._SEEN_BIGRAMS.clear()
     risk_scorer._DENIAL_STREAK.clear()
+    quarantine._QUARANTINED.clear()
+    quarantine._DENIAL_TIMES.clear()
     yield
 
 

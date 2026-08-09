@@ -24,17 +24,19 @@ itself.
 git clone <repo> && cd agentfw
 cp .env.example .env          # works with NO API key, using the mock LLM
 docker compose up -d
-python attacks/run_all.py     # 7 attacks, 7 blocks
+python attacks/run_all.py     # 8 attacks, 8 blocks
 python evals/score.py         # real measured numbers
 ```
 
 If that sequence doesn't work on a clean machine with no API key and no cloud account, that's a bug
 — [file an issue].
 
-**As of M1**, the first three lines work: the stack builds and runs, and `docker compose logs
-agent` shows one allowed and one denied tool call, both logged. `attacks/run_all.py` and
-`evals/score.py` are still one-line placeholders — they're M3 work. This note goes away once they
-are.
+**As of the pre-M3 ruling**, the first three lines work: the stack builds and runs, the full
+8-stage pipeline is live (identity, normalization, policy, threat intel, DLP, risk, decision,
+log), and `docker compose logs pep` shows every decision — including bypass-listener denials —
+without needing the eventstore reachable. `attacks/run_all.py` and `evals/score.py` still only
+call `RiskScorer.warm_up()` at startup; the corpora and scoring loop are M3 work. This note goes
+away once they are.
 
 ## Results
 
@@ -64,6 +66,21 @@ Each of these gave something up on purpose — details in [docs/architecture.md]
 - TBD
 - TBD
 
+## Decision lattice — implementation status
+
+`DENY < QUARANTINE < REQUIRE_APPROVAL < RATE_LIMIT < ALLOW_REDACTED < ALLOW` is the full lattice
+(AGENTFW_CONTEXT.md §2). Not every point on it has real behavior behind it yet — this table is
+the honest answer to "does X actually do anything," not just "does X get returned as a value":
+
+| Decision | Status | What actually happens |
+|---|---|---|
+| `DENY` | Implemented | The action does not execute. |
+| `ALLOW` | Implemented | The action executes. |
+| `ALLOW_REDACTED` | Implemented | The action executes (DLP found something REDACT-severity). |
+| `QUARANTINE` | Implemented | The action does not execute, **and** the agent's stable identity is added to the PEP's quarantine set — every subsequent call from it is denied with `reason=AGENT_QUARANTINED`, regardless of policy, until a human releases it via the loopback-only admin endpoint (`pep/admin.py`). Entry is automatic (risk CRITICAL band, a threat-intel hit, or 5+ denials in 60s); exit is manual only, on purpose — see `pep/quarantine.py`'s own WHY. |
+| `RATE_LIMIT` | **Designed, not implemented** | The action currently executes, same as `ALLOW`. There is no actual throttling — no token bucket, no per-agent rate cap enforced against it. The lattice position and the lattice math (`min()` narrowing) are real; the "limit" part of the name is aspirational until a throttling mechanism is built. |
+| `REQUIRE_APPROVAL` | **Designed, not implemented** | The action does **not** execute — but there is no approval queue, no notification, no human-in-the-loop workflow for it to wait on. It's currently indistinguishable from a dead end: the call is held forever in effect, because nothing ever approves it. This is the least-finished point on the lattice; a real implementation needs a queue, a timeout-to-deny, and something for a human to actually click. |
+
 ## What I'd do next
 
 Sidecar-per-agent deployment, Kubernetes NetworkPolicy as the L3 backstop, multicloud identity
@@ -72,7 +89,10 @@ scope for this repo (AGENTFW_CONTEXT.md §1).
 
 ## Project status
 
-Milestone: M1 — vertical slice. Agent loop (mock provider), PEP proxy with a hardcoded
-allow/deny table, event logging, and the Docker two-network split are built. Identity, the real
-policy engine, risk scoring, taint tracking, and DLP are all still M2. See
-[docs/architecture.md](docs/architecture.md) for what's real vs. what's a documented stand-in.
+Milestone: pre-M3, M2 complete. Agent loop, PEP proxy, event logging (durable + `docker compose
+logs pep` observable), the Docker two-network split, the real YAML policy engine + compiler,
+Ed25519 identity with Docker-socket attestation, request normalization, DLP, the risk scorer
+(with baseline seeding), taint tracking, and quarantine are all built — see the table above for
+exactly which lattice states are real versus designed-only. Not yet built: the 8 attack scripts,
+eval corpora, scorer, and dashboard (all M3). See [docs/architecture.md](docs/architecture.md)
+for what's real vs. what's a documented stand-in.

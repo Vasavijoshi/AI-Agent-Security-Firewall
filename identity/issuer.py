@@ -77,6 +77,14 @@ async def attest(request: Request) -> dict[str, str]:
             "role": role,
             "container_id": info["container_id"],
             "image_digest": info["image_digest"],
+            # WHY "service" is a separate claim from container_id: container_id is this specific
+            # process's identity — it changes on every restart, which is exactly right for the
+            # container-binding check below (a stolen token must die with its container) but
+            # exactly wrong for anything that needs to be known *before* attestation happens, like
+            # baseline-seeding per-agent behavioral state or quarantine membership. "service" is
+            # the compose service name (AGENT_REGISTRY's key) — stable across restarts, and
+            # knowable ahead of time precisely because it's a registry lookup, not a runtime fact.
+            "service": info["service"],
             # WHY this is here: the PEP's "container binding" check compares this against the IP
             # of the connection actually calling it, so a stolen token replayed from a different
             # container fails even though the signature is valid.

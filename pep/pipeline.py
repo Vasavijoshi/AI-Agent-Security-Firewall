@@ -12,12 +12,13 @@ from urllib.parse import urlsplit
 import httpx
 
 import dlp.detectors as dlp
+import pep.quarantine as quarantine
 import risk.scorer as risk
 import threat_intel.feed as threat_intel
 from identity.tokens import TokenInvalidError, public_key_from_b64, verify_token
 from pep.normalize import normalize_path, normalize_url
 from policy.compiler import compile_bundle
-from policy.engine import EXECUTABLE_DECISIONS, Decision, evaluate
+from policy.engine import BLOCKED_DECISIONS, EXECUTABLE_DECISIONS, Decision, evaluate
 
 IDENTITY_ISSUER_URL = os.environ.get("IDENTITY_ISSUER_URL", "http://identity:8082")
 POLICY_BUNDLE_PATH = os.environ.get("POLICY_BUNDLE_PATH", "policy/bundles/default.yaml")
@@ -84,10 +85,18 @@ def run_pipeline(
 
     # --- Stage 1: identity verification ---
     t0 = time.perf_counter()
-    role, agent_key, id_reason = _verify_identity(token, peer_ip)
+    role, agent_key, workload_key, id_reason = _verify_identity(token, peer_ip)
     latency["identity"] = _elapsed_ms(t0)
     if role is None:
         return _deny_early(id_reason, "IDENTITY_DENY", agent_key, latency)
+
+    # --- Quarantine gate: absolute, checked before any policy/risk work runs ---
+    # WHY here, not folded into stage 1: identity succeeded — the token's signature, expiry, and
+    # container binding are all genuinely valid. This is a separate question: is THIS identity
+    # currently blocked, regardless of what it's asking for. "Regardless of policy" means exactly
+    # that — no rule, however permissive, can override it (pep/quarantine.py: exit is manual only).
+    if quarantine.is_quarantined(workload_key):
+        return _deny_early("AGENT_QUARANTINED", "QUARANTINE_DENY", agent_key, latency)
 
     # --- Stage 2: request normalization ---
     # WHY the canonical form replaces `arguments` for every stage from here on, including what
@@ -133,9 +142,15 @@ def run_pipeline(
     latency["dlp"] = _elapsed_ms(t0)
 
     # --- Stage 6: risk + behavior scoring ---
+    # WHY workload_key here, not agent_key: behavioral history ("has this agent called this
+    # destination before") is a fact about the deployed workload, which risk/baseline.jsonl can
+    # pre-seed because it's known from the registry ahead of time — not about this one ephemeral
+    # container process, which didn't exist when the baseline was written. The event log still
+    # uses the more specific agent_key (below) for forensic purposes; only risk scoring and
+    # quarantine use the stable key.
     t0 = time.perf_counter()
     risk_result = risk.score(
-        agent_id=agent_key,
+        agent_id=workload_key,
         role=role,
         tool=tool,
         destination_key=fqdn or resource,
@@ -167,12 +182,27 @@ def run_pipeline(
         _SESSION_TAINT[session_id] = True
 
     risk.record_outcome(
-        agent_id=agent_key,
+        agent_id=workload_key,
         role=role,
         tool=tool,
         destination_key=fqdn or resource,
         decision=final_decision,
     )
+
+    # --- Quarantine triggers: risk CRITICAL, a threat-intel hit, or >=5 denials in 60s ---
+    # WHY checked here, after the verdict, rather than folded into stage 6/7: entering quarantine
+    # is a *response* to this call's outcome, not part of deciding it — this call itself is
+    # already governed by the ordinary decision above; only the *next* call from this agent will
+    # see the quarantine gate. WHY BLOCKED_DECISIONS (DENY or QUARANTINE), not DENY alone: a call
+    # already narrowed to QUARANTINE by this same risk score still represents a blocked action for
+    # counting purposes — record_denial() must run for every blocked call regardless of the other
+    # two triggers, so the 60s counter doesn't miss calls that were blocked for unrelated reasons.
+    if final_decision in BLOCKED_DECISIONS and quarantine.record_denial(workload_key):
+        quarantine.enter(workload_key, "5+ denials within 60 seconds")
+    if risk_result.band == "CRITICAL":
+        quarantine.enter(workload_key, "risk score reached CRITICAL band")
+    if ti_hit:
+        quarantine.enter(workload_key, "threat-intelligence hit on destination")
 
     return PipelineResult(
         decision=final_decision,
@@ -192,28 +222,39 @@ def run_pipeline(
     )
 
 
-def _verify_identity(token: str | None, peer_ip: str | None) -> tuple[str | None, str, str]:
-    """Returns (role, agent_key, reason). role is None on any failure; agent_key is always a
-    string (the peer IP, if identity couldn't be established) so risk/event logging always has
-    *something* to key on — an unauthenticated caller still gets tracked, just not authorized."""
+def _verify_identity(token: str | None, peer_ip: str | None) -> tuple[str | None, str, str, str]:
+    """Returns (role, agent_key, workload_key, reason). role is None on any failure.
+
+    agent_key and workload_key are always strings (falling back to the peer IP) so risk/event
+    logging always has *something* to key on — an unauthenticated caller still gets tracked, just
+    not authorized. They diverge on success: agent_key is the specific container instance (for
+    event-log forensics), workload_key is the stable, registry-known identity (for risk scoring
+    and quarantine — see the WHY at their call sites in run_pipeline)."""
     fallback_key = peer_ip or "unknown"
     if not token:
-        return None, fallback_key, "identity_verification_failed: no token presented"
+        return None, fallback_key, fallback_key, "identity_verification_failed: no token presented"
     try:
         public_key = _get_issuer_public_key()
         claims = verify_token(token, public_key)
     except TokenInvalidError as exc:
-        return None, fallback_key, f"identity_verification_failed: {exc}"
+        return None, fallback_key, fallback_key, f"identity_verification_failed: {exc}"
     except httpx.HTTPError:
-        return None, fallback_key, "identity_verification_failed: issuer unreachable"
+        return None, fallback_key, fallback_key, "identity_verification_failed: issuer unreachable"
 
     # --- container binding: the connection presenting this token must be the same one the
     # issuer attested (AGENTFW_CONTEXT.md §2) — a stolen token replayed from elsewhere fails here
     # even though its signature is perfectly valid.
     if peer_ip is None or claims.get("attested_ip") != peer_ip:
-        return None, fallback_key, "identity_verification_failed: container binding mismatch"
+        return (
+            None,
+            fallback_key,
+            fallback_key,
+            "identity_verification_failed: container binding mismatch",
+        )
 
-    return claims["role"], claims.get("container_id", fallback_key)[:12], "ok"
+    agent_key = claims.get("container_id", fallback_key)[:12]
+    workload_key = claims.get("service") or agent_key
+    return claims["role"], agent_key, workload_key, "ok"
 
 
 def _get_issuer_public_key():
