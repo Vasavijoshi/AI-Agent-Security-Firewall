@@ -3,7 +3,8 @@
 > An LLM agent can be talked into anything. This is the layer that stops it from *doing* anything
 > it shouldn't.
 
-[CI badge — TBD once `.github/workflows/ci.yml` is real, in M2]
+[CI badge — TBD once GitHub Actions has run at least once; workflow itself is real as of M1
+(`ruff check` + `ruff format --check`), expands with tests in M2]
 
 ## The 30-second demo
 
@@ -29,6 +30,11 @@ python evals/score.py         # real measured numbers
 
 If that sequence doesn't work on a clean machine with no API key and no cloud account, that's a bug
 — [file an issue].
+
+**As of M1**, the first three lines work: the stack builds and runs, and `docker compose logs
+agent` shows one allowed and one denied tool call, both logged. `attacks/run_all.py` and
+`evals/score.py` are still one-line placeholders — they're M3 work. This note goes away once they
+are.
 
 ## Results
 
@@ -66,4 +72,7 @@ scope for this repo (AGENTFW_CONTEXT.md §1).
 
 ## Project status
 
-Milestone: M0 — repo scaffold only. No application logic yet.
+Milestone: M1 — vertical slice. Agent loop (mock provider), PEP proxy with a hardcoded
+allow/deny table, event logging, and the Docker two-network split are built. Identity, the real
+policy engine, risk scoring, taint tracking, and DLP are all still M2. See
+[docs/architecture.md](docs/architecture.md) for what's real vs. what's a documented stand-in.

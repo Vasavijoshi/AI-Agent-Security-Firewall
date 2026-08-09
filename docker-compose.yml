@@ -1,6 +1,7 @@
-# Topology only for this milestone — no Dockerfiles exist yet (M1 builds them), so `docker compose up`
-# is not expected to succeed yet. What must already be correct is the network split in
-# AGENTFW_CONTEXT.md §5: agent-net has no internet route, pep is the only dual-homed container.
+# M1 vertical slice. The network split below is the load-bearing detail (AGENTFW_CONTEXT.md §5):
+# agent-net has no internet route at all; pep is the only dual-homed container. Every service
+# builds from the repo root as context (not its own subdirectory) because pep imports policy/ and
+# talks to eventstore over HTTP — a per-service build context couldn't see sibling packages.
 
 networks:
   agent-net:
@@ -13,28 +14,44 @@ networks:
 
 services:
   agent:
-    build: ./agent # Dockerfile added in M1
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
     networks: [agent-net]
     environment:
       LLM_PROVIDER: ${LLM_PROVIDER:-mock}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENTFW_SCENARIO: ${AGENTFW_SCENARIO:-m1_allowed_call}
+      AGENT_ID: research-agent-01
+      PEP_URL: http://pep:8080
       HTTP_PROXY: http://pep:8080
       HTTPS_PROXY: http://pep:8080
       # WHY: this is the whole enforcement story in two lines — the agent has no other
       # configured route out, and agent-net physically has no other route out either.
+      # (agent/tools.py talks to PEP_URL directly with trust_env=False for its own tool calls —
+      # see the WHY comment there. These vars stay set as the general-purpose belt for any code
+      # path that tries a raw outbound call instead of going through agent/tools.py.)
     depends_on: [pep]
+    # WHY no restart policy: the agent is a run-once batch job (agent/main.py) that plays one
+    # scripted scenario and exits — it is expected to show Exited(0), not stay Up. Read its
+    # output with `docker compose logs agent`.
 
   pep:
-    build: ./pep # Dockerfile added in M1
+    build:
+      context: .
+      dockerfile: pep/Dockerfile
     networks: [agent-net, egress-net] # WHY: the ONLY dual-homed container (§5) — every
     # byte the agent sends outward crosses this boundary.
     environment:
       EVENTSTORE_URL: http://eventstore:8090
-      POLICY_BUNDLE_PATH: /app/policy/bundles/default.yaml
+      POLICY_BUNDLE_PATH: /app/policy/bundles/default.yaml # unused until M2's YAML engine exists;
+      # M1's decision table is hardcoded in pep/pipeline.py.
     depends_on: [eventstore]
 
   eventstore:
-    build: ./events # Dockerfile added in M1
+    build:
+      context: .
+      dockerfile: events/Dockerfile
     networks: [egress-net]
     volumes:
       - eventstore-data:/data
@@ -47,7 +64,9 @@ services:
       EVENTSTORE_DB_PATH: /data/events.db
 
   dashboard:
-    build: ./dashboard # Dockerfile added in M1
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
     networks: [egress-net] # WHY: only needs to read the event store, never touches agent-net
     environment:
       EVENTSTORE_URL: http://eventstore:8090

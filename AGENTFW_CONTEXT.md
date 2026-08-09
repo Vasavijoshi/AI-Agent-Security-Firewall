@@ -133,14 +133,15 @@ agentfw/
 ├── requirements.txt           # each dep justified in a comment
 ├── .github/workflows/ci.yml
 ├── docs/{architecture.md,threat-model.md,demo.md}
-├── agent/{loop.py,tools.py,providers.py,prompts/}
+├── agent/{loop.py,tools.py,providers.py,prompts/,main.py}   # main.py: container entrypoint, added M1
 ├── pep/{proxy.py,pipeline.py,normalize.py}
 ├── policy/{engine.py,compiler.py,bundles/default.yaml}
 ├── identity/issuer.py
 ├── risk/scorer.py
 ├── threat_intel/{feed.py,lists/}
 ├── dlp/detectors.py
-├── events/{schema.json,store.py}
+├── events/{schema.json,store.py,app.py}   # app.py: thin FastAPI wrapper, added M1 so the
+│                                            # `eventstore` container has something to run
 ├── dashboard/app.py
 ├── attacks/{a1..a7}.py + run_all.py
 ├── evals/{corpus_attack.jsonl,corpus_benign.jsonl,score.py}
