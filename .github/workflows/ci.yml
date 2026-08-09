@@ -1,2 +1,20 @@
-# CI pipeline (lint -> tests -> policy tests -> eval suite) — implemented in M2.
-# Placeholder only; no application logic exists yet for this workflow to run.
+name: CI
+
+# WHY minimal at M1: only lint/format are meaningful right now — there's no application logic to
+# test yet. Expanded in M2 with pytest, the policy test suite, and the invariant suite
+# (AGENTFW_CONTEXT.md §9).
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: ruff check .
+      - run: ruff format --check .

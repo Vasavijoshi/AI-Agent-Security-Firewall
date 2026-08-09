@@ -33,8 +33,8 @@ If that sequence works on a clean machine with no API key and no cloud account, 
 - **Python 3.11+.** No other application language.
 - **No Kubernetes. No cloud accounts. No Terraform. No paid services.** Not even optionally, not even commented out.
 - **No LLM framework** (no LangChain, LlamaIndex, CrewAI, AutoGen). The agent loop is hand-written against the Anthropic SDK. The whole point is that I can explain the loop.
-- **No ML framework** (no PyTorch, TensorFlow, transformers). Statistical anomaly detection only, with plain numpy or scikit-learn if truly needed.
-- **Dependency budget: 12 packages maximum** across the whole project. Before adding one, justify it in a comment in `requirements.txt`. Prefer the standard library.
+- **No ML framework** (no PyTorch, TensorFlow, transformers). Statistical anomaly detection only. Prefer stdlib (`statistics`, `math`) — numpy or scikit-learn only if a specific need can't be met without them. *(Resolved M0: the M1/M2 risk scorer is additive integer arithmetic; stdlib is sufficient, numpy is not in `requirements.txt`.)*
+- **Dependency budget: 12 packages maximum** across the whole project. Before adding one, justify it in a comment in `requirements.txt`. Prefer the standard library. *(Resolved M0: currently 10/12 — `black` and `numpy` removed; `ruff` does both lint and format.)*
 - **No file over 400 lines.** Split it.
 - **The repo must run with `LLM_PROVIDER=mock` and no API key.** This is non-negotiable — it is what makes the project runnable by a recruiter and testable in CI.
 - **Never read, print, echo, or commit `.env`.** It is gitignored from commit one. If you need to know whether a key is set, check `bool(os.getenv(...))`, never the value.
@@ -70,6 +70,44 @@ agent container ──HTTP──▶ PEP ──▶ 8-stage pipeline ──▶ all
 DENY < QUARANTINE < REQUIRE_APPROVAL < RATE_LIMIT < ALLOW_REDACTED < ALLOW
 ```
 
+### Identity mechanism (resolved M0)
+
+No SPIFFE, no mTLS, no Kubernetes attestation — those are cut by §1. The MVP mechanism, chosen
+because it needs nothing beyond what plain Docker Compose already gives us:
+
+- `identity/issuer.py` runs as its own container and mounts `/var/run/docker.sock` **read-only**.
+- `POST /attest` takes the **source IP of the incoming connection** (not a self-asserted claim),
+  resolves it via the Docker API to `container_id` + `image_digest` + compose service name, and
+  checks that triple against a static agent registry.
+- Only on a registry match does the issuer mint an Ed25519-signed token:
+  `{spiffe_id, role, container_id, image_digest, iat, exp=+15min}`.
+- The PEP holds only the issuer's **public** key. It verifies signature, expiry, and that the
+  token's `container_id` still matches the socket connecting to it — never trusts a bare bearer
+  token.
+
+```
+# WHY: /attest is deliberately unauthenticated. It doesn't need a credential because it's
+# authenticated by network position + platform introspection instead: only something running
+# as a container Docker itself can see, on agent-net, gets a truthful answer to "who are you."
+# The agent is never asked to assert its own identity, so a prompt-injected agent has nothing
+# to forge here — the injection can change what it *wants*, never who the issuer *sees* it as.
+#
+# WHY /var/run/docker.sock, read-only, and why that's a real trade-off, not a free lunch:
+# mounting the socket gives the issuer container root-equivalent visibility into the Docker
+# daemon on the host — it can inspect (though not control, since it's read-only and we only
+# ever call inspect endpoints) every container, not just agentfw's. That's a bigger blast radius
+# than a "real" SPIFFE node attestor would have, and it's the one piece of this design that
+# would need to change before this ran anywhere but a single trusted dev machine. Accepted for
+# M0/M1 because the alternative (a k8s ServiceAccount-style attestor) is exactly the
+# infrastructure §1 rules out, and this is the cheapest thing that is still "prove what you are
+# via the platform, not via a shared secret."
+```
+
+If the Docker-API attestation path proves unworkable in practice (e.g. Docker Desktop on Windows
+restricts non-root socket access in a way that blocks this cleanly), **stop and flag it before
+substituting anything weaker** — do not silently fall back to a shared-secret or env-var identity
+scheme without asking first.
+
 ---
 
 ## 3. Invariants — property-tested, must never break
@@ -100,6 +138,7 @@ agentfw/
 ├── policy/{engine.py,compiler.py,bundles/default.yaml}
 ├── identity/issuer.py
 ├── risk/scorer.py
+├── threat_intel/{feed.py,lists/}
 ├── dlp/detectors.py
 ├── events/{schema.json,store.py}
 ├── dashboard/app.py
@@ -138,11 +177,20 @@ This is the non-bypassability proof. `docker compose exec agent curl https://exa
 
 The mock is what makes attacks reproducible, CI possible, and the repo runnable without a key. It is a first-class component, not a stub — treat it accordingly.
 
+**Scenario selection (resolved M0):** `MockProvider.__init__` takes `scenario: str` as a
+constructor parameter, defaulting to `os.environ.get("AGENTFW_SCENARIO", "default")` when not
+passed explicitly. The scenario is chosen by whatever *drives* the agent process (a test, an
+attack script, `docker-compose.yml`'s environment block) — **never by a request header or any
+other value the agent's own request can carry.** Letting a live request pick its own scripted
+behaviour would let a "compromised" agent choose to be well-behaved for the grader, which defeats
+the point of a scripted attack. `default` is a benign no-op scenario (a couple of harmless allowed
+calls), so booting the stack with no `AGENTFW_SCENARIO` set still does something sane.
+
 ---
 
 ## 7. Coding standards
 
-- Type hints everywhere. `ruff` + `black`, line length 100.
+- Type hints everywhere. `ruff` for linting **and** formatting (`ruff format`), line length 100. *(Resolved M0: `black` dropped — `ruff format` is a drop-in replacement and removing it frees a dependency-budget slot.)*
 - Docstrings on public functions state **what security property this upholds**, not just what the code does.
 - Structured logging only — one JSON event per decision, conforming to `events/schema.json`.
 - Custom exceptions, never bare `except:`.
@@ -170,7 +218,12 @@ The mock is what makes attacks reproducible, CI possible, and the repo runnable 
 ## 9. Milestones and definition of done
 
 **M1 — Vertical slice.** Agent loop (mock provider) with 5 tools; PEP proxy; hardcoded allow/deny; event logging; Docker two-network split.
-*Done when:* one call allowed, one denied, both logged, and `curl` from the agent container to a non-allowlisted host fails at the network layer.
+*Done when:* one call allowed, one denied, both logged, and — *(resolved M0, corrected wording)* —
+`curl` from the agent container to **ANY external host fails at the network layer, including
+allowlisted ones**, proving the network layer is indiscriminate and that all allowlisting is the
+PEP's job. Two tiers, two jobs: `agent-net` proves non-bypassability by blocking everything without
+exception; the PEP proves policy by selectively forwarding only what's allowed. Neither claim
+follows from the other, so both get demonstrated separately.
 
 **M2 — The engine.** YAML policy bundle + compiler (conflict/shadow detection) + engine; identity issuer with Ed25519 short-lived tokens; risk scorer with factor vectors; taint tracking; DLP detectors; policy test suite; the 6 invariant tests; GitHub Actions CI.
 *Done when:* CI is green and a deliberately broken policy PR fails the build.

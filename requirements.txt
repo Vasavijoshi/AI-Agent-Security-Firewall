@@ -1,4 +1,4 @@
-# AgentFW dependency budget: 12 packages max (AGENTFW_CONTEXT.md §1). Currently at 12/12.
+# AgentFW dependency budget: 12 packages max (AGENTFW_CONTEXT.md §1). Currently at 10/12.
 # Every addition needs a justification here and a green light in chat before it's added.
 
 # PEP proxy framework — async, and its request/response models (Pydantic, transitive) give the
@@ -23,10 +23,6 @@ anthropic==0.39.0
 # (policy/compiler.py) — stdlib has no Ed25519 primitive.
 cryptography==43.0.3
 
-# Statistical anomaly detection for the risk/behavior scorer (EWMA z-scores, bigram frequency) —
-# explicitly allowed in place of an ML framework (AGENTFW_CONTEXT.md §1).
-numpy==2.1.3
-
 # Dashboard (dashboard/app.py) — 200 lines, no frontend build step, per AgentFW_Build_Plan_v2.md §4.
 streamlit==1.40.1
 
@@ -37,8 +33,10 @@ pytest==8.3.3
 # monotonicity — a fixed example set can't cover "for every possible pair."
 hypothesis==6.115.5
 
-# Linter, line length 100 (pyproject.toml). Dev-only but still counted against the budget.
+# Lint AND format (`ruff format`), line length 100 (pyproject.toml). Dev-only but still counted
+# against the budget. Replaces black as of M0 resolution — one tool instead of two.
 ruff==0.7.4
 
-# Formatter, line length 100 (pyproject.toml). Dev-only but still counted against the budget.
-black==24.10.0
+# Not listed: numpy. Removed at M0 — the risk scorer (risk/scorer.py) is additive integer
+# arithmetic; stdlib `statistics`/`math` covers it. Revisit only if a specific factor genuinely
+# needs it (AGENTFW_CONTEXT.md §1).
