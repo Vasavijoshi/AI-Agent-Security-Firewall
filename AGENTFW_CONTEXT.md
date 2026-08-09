@@ -230,7 +230,18 @@ follows from the other, so both get demonstrated separately.
 **M2 — The engine.** YAML policy bundle + compiler (conflict/shadow detection) + engine; identity issuer with Ed25519 short-lived tokens; risk scorer with factor vectors; taint tracking; DLP detectors; policy test suite; the 6 invariant tests; GitHub Actions CI.
 *Done when:* CI is green and a deliberately broken policy PR fails the build.
 
-**M3 — The proof.** 8 attack scripts (A1 unauthorized API, A2 exfiltration, A3 restricted DB, A4 lateral movement, A5 malicious tool, A6 **indirect prompt injection**, A7 privilege escalation, A8 **HTTP_PROXY bypass attempt** — resolved M2, exercises `pep/bypass_proxy.py`); eval corpora (≥60 attack, ≥60 benign cases); scorer reporting block rate, false-positive rate, and latency percentiles; Streamlit dashboard.
+**Pre-M3 ruling** (resolved after M2's Docker verification, before M3 started): `pep/normalize.py`
+built for real and wired into pipeline stage 2 (was a documented no-op through M1/M2); invariant
+§3.6 un-skipped and passing; `risk/baseline.jsonl` (200 benign events, 4 roles) +
+`RiskScorer.warm_up()` seed org-wide destination novelty and per-role tool-chain bigrams at
+startup, called by `attacks/run_all.py` and `evals/score.py`; the eval verdict taxonomy
+(`policy.engine.BLOCKED_DECISIONS` / `PERMITTED_DECISIONS` / `FRICTION_DECISIONS`, and
+`evals/score.py`'s `block_rate`/`false_positive_rate`/`friction_rate`) settled ahead of M3's
+scorer. Also: the M1 gap #3 bypass-catch listener (`pep/bypass_proxy.py`) now mirrors every event
+to the PEP's own stdout logger, not just the eventstore POST — `docker compose logs pep` was
+verified blind to bypass denials until this fix.
+
+**M3 — The proof.** 8 attack scripts (A1 unauthorized API, A2 exfiltration, A3 restricted DB, A4 lateral movement, A5 malicious tool, A6 **indirect prompt injection**, A7 privilege escalation, A8 **HTTP_PROXY bypass attempt** — resolved M2, exercises `pep/bypass_proxy.py`); eval corpora (≥60 attack, ≥60 benign cases); scorer reporting block rate, false-positive rate, friction rate, and latency percentiles; Streamlit dashboard.
 *Done when:* `attacks/run_all.py` prints 8 blocks with reasons, and `evals/score.py` prints measured numbers.
 
 **M4 — The packaging.** README with diagram and demo GIF; `docs/demo.md` 5-minute walkthrough; measured p50/p95/p99 PEP latency; threat model doc; resume bullets filled with real numbers.

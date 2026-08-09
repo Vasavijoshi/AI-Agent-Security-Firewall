@@ -40,6 +40,26 @@ class Decision(IntEnum):
 # factors, which is the honest scope for this milestone.
 EXECUTABLE_DECISIONS = frozenset({Decision.ALLOW, Decision.ALLOW_REDACTED, Decision.RATE_LIMIT})
 
+# --- eval verdict taxonomy (pre-M3 ruling, settled here so M3's scorer imports it rather than
+# invents it) ---
+# WHY REQUIRE_APPROVAL is "permitted" here despite not being in EXECUTABLE_DECISIONS above: these
+# two groupings answer different questions. EXECUTABLE_DECISIONS asks "does pep/proxy.py call
+# _execute() today" — no, there's no approval workflow yet, so it doesn't. BLOCKED/PERMITTED asks
+# "was this verdict the firewall's *intent* to stop the action" — REQUIRE_APPROVAL means "ask a
+# human," which is not a stop, so it counts as permitted-with-friction, not blocked. A benign call
+# landing on REQUIRE_APPROVAL is friction the firewall imposes, not a false positive; the fact
+# that nothing executes it automatically yet is a separate, honestly-scoped implementation gap
+# (see EXECUTABLE_DECISIONS' own WHY above), not a reason to reclassify the verdict itself.
+BLOCKED_DECISIONS = frozenset({Decision.DENY, Decision.QUARANTINE})
+PERMITTED_DECISIONS = frozenset(
+    {Decision.ALLOW, Decision.ALLOW_REDACTED, Decision.RATE_LIMIT, Decision.REQUIRE_APPROVAL}
+)
+# WHY a further split out of PERMITTED, not a third independent bucket: friction is a subset of
+# permitted (the call wasn't blocked) that still isn't free — reporting it separately keeps it
+# from ever being silently absorbed into either "the firewall let this through cleanly" or "the
+# firewall blocked this," which is exactly the ruling's point.
+FRICTION_DECISIONS = frozenset({Decision.RATE_LIMIT, Decision.REQUIRE_APPROVAL})
+
 # WHY exactly these two tools: they're the only "write"-shaped tools in the actual 5-tool set
 # (agent/tools.py) — db.write/db.delete/http.put appear in the architecture doc but were never
 # implemented as real tools, so including them here would be untestable dead weight.

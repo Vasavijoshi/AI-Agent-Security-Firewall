@@ -11,10 +11,15 @@ its definition. All state resets on process restart; that's the concrete cost of
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from policy.engine import Decision
+
+DEFAULT_BASELINE_PATH = "risk/baseline.jsonl"
 
 # --- factor point values (AgentFW_Architecture_v1.md §8) ---
 THREAT_INTEL_HIT = 60
@@ -213,3 +218,60 @@ def _band_and_ceiling(total: int) -> tuple[str, Decision]:
     if total >= 25:
         return "MODERATE", Decision.RATE_LIMIT
     return "LOW", Decision.ALLOW
+
+
+class RiskScorer:
+    """Namespace for baseline seeding over this module's behavioral state.
+
+    `score()`/`record_outcome()` above remain the per-request API — this class exists only to
+    give the pre-M3 ruling's `RiskScorer.warm_up(path)` a home, seeded from `risk/baseline.jsonl`.
+
+    That file represents the seven-day historical baseline a real deployment would already have
+    accumulated before anyone ever ran an eval or an attack script against it. It is honest by
+    construction: every line was authored by hand as ordinary, policy-ALLOWed traffic for its role
+    (news/arxiv reads, ERP postings, customer-table lookups, admin-console checks) — there is no
+    attack traffic in it, so warming up from it can suppress cold-start novelty noise but cannot
+    suppress or mask a real detection.
+    """
+
+    @staticmethod
+    def warm_up(path: str = DEFAULT_BASELINE_PATH) -> int:
+        """Replay baseline events into behavioral state. Returns the number of events replayed.
+
+        WHY this does NOT call record_outcome() for each line: record_outcome() also feeds
+        _CALL_TIMES (a 60-second rate window) and _DENIAL_STREAK (recency-relative) — stuffing
+        ~200 historical events into "the last 60 seconds" at process start would itself trigger a
+        false RATE_ANOMALY for every role, the opposite of what warming up is for. Only the
+        state that genuinely means "has this been seen before, ever" gets seeded: org-wide
+        destination novelty (agent-independent, so it applies to any future agent regardless of
+        which container attests) and per-role tool-chain bigrams (AGENTFW_CONTEXT.md's identity
+        model keys _LAST_TOOL/_SEEN_BIGRAMS by role, not by the ephemeral per-restart agent_id, so
+        this seeding is durable across the real agent's container restarts).
+
+        WHY DEST_NEVER_SEEN_BY_AGENT is only partly addressed, and that's honest, not a bug: it's
+        keyed by agent_id, which is only known once the live agent actually attests (after this
+        function has already run at process startup) — there is no way to pre-seed a per-agent set
+        for an agent_id that doesn't exist yet. Seeding _SEEN_BY_ORG still downgrades a brand-new
+        agent's first call from the +15 DEST_UNKNOWN_TO_ORG penalty to the smaller +10
+        DEST_NEVER_SEEN_BY_AGENT one, which alone is below the MODERATE band threshold.
+        """
+        count = 0
+        for line in Path(path).read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            event: dict[str, Any] = json.loads(line)
+            role = event["role"]
+            tool = event["tool"]
+            destination_key = event.get("destination_key")
+
+            if destination_key is not None:
+                _SEEN_BY_ORG.add(destination_key)
+
+            last = _LAST_TOOL.get(role)
+            if last is not None:
+                _SEEN_BIGRAMS.setdefault(role, set()).add((last, tool))
+            _LAST_TOOL[role] = tool
+
+            count += 1
+        return count

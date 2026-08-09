@@ -158,24 +158,26 @@ and is contained at the enforcement layer. That is the project's headline result
 
 ## M1 implementation notes — what's real vs. a documented stand-in
 
-Real: `agent/loop.py` + `agent/providers.py` (the hand-written tool-calling loop and
-`MockProvider`), `agent/tools.py` dispatching every call through the PEP, `pep/proxy.py` +
-`pep/pipeline.py` (stages 1, 3, 7 execute for real), `events/store.py` + `events/app.py`
-(log-or-deny, durable SQLite), the two-network Docker Compose split with real Dockerfiles.
+As of the pre-M3 ruling, all 8 pipeline stages execute for real: identity (Ed25519 tokens +
+Docker-socket attestation + container-binding check), normalization (`pep/normalize.py`),
+policy (YAML bundle + compiler + engine), threat intel (local set lookup), DLP (regex + entropy),
+risk (additive scorer), decision (`min()` across policy/DLP/risk), and log-or-deny (durable SQLite
++ stdout, both `docker compose logs pep` and the eventstore container observable).
 
-Stand-ins, each named at its point of use rather than left implicit:
+Known, documented simplifications — each named at its point of use rather than left implicit:
 
-- **Stage 1 (identity)** trusts a caller-supplied `X-Agent-Id` header against a static dict in
-  `pep/pipeline.py`. The real mechanism — issuer container attests callers via the Docker API
-  against a read-only `/var/run/docker.sock` mount, mints Ed25519 tokens the agent never
-  self-asserts — is specified in `AGENTFW_CONTEXT.md` §2 and built in M2 (`identity/issuer.py`).
-  Any caller can forge this header today; that gap is the point of naming it here.
-- **Stage 3 (policy)** is a two-entry Python dict (`HARDCODED_RULES`), not the YAML bundle +
-  compiler + engine from §9's M2 scope. It still enforces default-deny (no entry → `DENY`).
-- **Stages 2, 4, 5, 6** (normalize, threat intel, DLP, risk) are no-ops that report `0.0` latency
-  and never narrow a decision — there is nothing yet for them to do. Their slot in the event
-  schema's `latency_ms` is already correct shape for M2 to fill in.
-- `data_classification` is fixed at `"internal"` and `session_taint` at `"clean"` on every event —
-  honest placeholders ("not evaluated"), not a claim that classification or taint tracking exist.
-- `policy_bundle_version` is the literal string `"m1-hardcoded"` — there is no bundle yet to
-  version.
+- **Docker-socket attestation is unverified in this development environment.** The crypto
+  (`identity/tokens.py`) and the PEP's consumption of tokens are both fully tested; the actual
+  `/containers/json` lookup against `/var/run/docker.sock` has only run in the Docker environment
+  where it was externally verified, not in every environment this code has been edited in.
+- **Risk scoring's behavioral state is in-memory and per-process** (`risk/scorer.py`) — destination
+  novelty, call-chain bigrams, rate, and denial streaks all reset on restart. `risk/baseline.jsonl`
+  + `RiskScorer.warm_up()` seed this from ~200 replayed benign events at startup so a freshly
+  booted stack doesn't score every first call as anomalous purely from cold-start novelty.
+- **RATE_LIMIT executes without actually throttling**, and **REQUIRE_APPROVAL/QUARANTINE have no
+  workflow behind them** (no approval queue, no quarantine automation) — they simply don't execute.
+  Honest scope, not a finished feature.
+- **The bypass-catch listener** (`pep/bypass_proxy.py`, port 8081) denies every HTTP_PROXY/
+  HTTPS_PROXY-directed request outright and logs `decision=DENY reason=BYPASS_ATTEMPTED` — both to
+  the eventstore and to the PEP's own stdout, so `docker compose logs pep` shows it even if the
+  eventstore is unreachable.

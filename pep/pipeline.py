@@ -7,7 +7,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -15,6 +15,7 @@ import dlp.detectors as dlp
 import risk.scorer as risk
 import threat_intel.feed as threat_intel
 from identity.tokens import TokenInvalidError, public_key_from_b64, verify_token
+from pep.normalize import normalize_path, normalize_url
 from policy.compiler import compile_bundle
 from policy.engine import EXECUTABLE_DECISIONS, Decision, evaluate
 
@@ -64,6 +65,7 @@ class PipelineResult:
     risk_score: int
     risk_factors: list[dict[str, Any]] = field(default_factory=list)
     latency_ms: dict[str, float] = field(default_factory=dict)
+    normalized_arguments: dict[str, Any] = field(default_factory=dict)
 
 
 def run_pipeline(
@@ -87,9 +89,12 @@ def run_pipeline(
     if role is None:
         return _deny_early(id_reason, "IDENTITY_DENY", agent_key, latency)
 
-    # --- Stage 2: request normalization (no-op — pep/normalize.py is not M2 scope; see
-    # AGENTFW_CONTEXT.md §4) ---
+    # --- Stage 2: request normalization ---
+    # WHY the canonical form replaces `arguments` for every stage from here on, including what
+    # eventually gets forwarded: evaluating against one form and forwarding another is exactly the
+    # confused-deputy gap pep/normalize.py exists to close (AGENTFW_CONTEXT.md §2).
     t0 = time.perf_counter()
+    arguments = normalize_arguments(tool, arguments)
     fqdn, resource = extract_target(tool, arguments)
     latency["normalize"] = _elapsed_ms(t0)
 
@@ -183,6 +188,7 @@ def run_pipeline(
             for f in risk_result.factors
         ],
         latency_ms=_finalize(latency),
+        normalized_arguments=arguments,
     )
 
 
@@ -220,8 +226,12 @@ def _get_issuer_public_key():
 
 
 def extract_target(tool: str, arguments: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Read the destination/resource out of `arguments`. Called after normalize_arguments() has
+    already run (see run_pipeline's stage 2), so a bare urlsplit is sufficient here — the
+    canonicalizing work (punycode, traversal collapse, userinfo strip, ...) already happened once,
+    in pep/normalize.py, and doesn't need repeating."""
     if tool.startswith("http."):
-        parsed = urlparse(arguments.get("url", ""))
+        parsed = urlsplit(arguments.get("url", ""))
         return parsed.hostname, (parsed.path or None)
     if tool == "db.query":
         return None, arguments.get("table")
@@ -230,6 +240,18 @@ def extract_target(tool: str, arguments: dict[str, Any]) -> tuple[str | None, st
     if tool == "email.send":
         return None, arguments.get("to")
     return None, None
+
+
+def normalize_arguments(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of `arguments` with URL/path fields replaced by their canonical form
+    (pep/normalize.py) — this is what every stage from here on sees, and what eventually gets
+    forwarded (pep/proxy.py's _execute()), never the caller's original."""
+    normalized = dict(arguments)
+    if tool.startswith("http.") and "url" in normalized:
+        normalized["url"] = normalize_url(normalized["url"]).url
+    if tool == "file.read" and "path" in normalized:
+        normalized["path"] = normalize_path(normalized["path"])
+    return normalized
 
 
 def _is_external(fqdn: str | None) -> bool:

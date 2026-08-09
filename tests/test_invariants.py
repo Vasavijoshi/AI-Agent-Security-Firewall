@@ -11,6 +11,7 @@ from hypothesis import strategies as st
 import pep.pipeline as pipeline
 import risk.scorer as risk_scorer
 from identity.tokens import generate_keypair, mint_token
+from pep.normalize import normalize_url
 from policy.engine import Decision, evaluate, load_bundle
 
 TEST_BUNDLE = load_bundle("policy/bundles/default.yaml")
@@ -201,12 +202,38 @@ def test_taint_is_monotonic(tool_sequence: list[str]) -> None:
 # Invariant 6 — Normalization is idempotent
 # =====================================================================================
 
-
-@pytest.mark.skip(
-    reason="pep/normalize.py is not implemented — stage 2 is a documented no-op "
-    "(AGENTFW_CONTEXT.md §4, resolved M0: not requested in the M2 ruling). There is no "
-    "normalize() function yet for normalize(normalize(x)) == normalize(x) to test against; "
-    "skipping honestly rather than asserting idempotence of the identity function."
+_HOST_LABEL = st.text(
+    alphabet="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-",
+    min_size=1,
+    max_size=10,
 )
-def test_normalization_is_idempotent() -> None:
-    raise NotImplementedError
+_HOST = st.lists(_HOST_LABEL, min_size=1, max_size=4).map(".".join)
+_PATH_SEGMENT = st.sampled_from(["a", "b", "..", ".", "%2e%2e", "x%20y", "CaseSeg", "%252e%252e"])
+_PATH = st.lists(_PATH_SEGMENT, min_size=0, max_size=6).map(lambda segs: "/" + "/".join(segs))
+_QUERY_PAIR = st.tuples(
+    st.sampled_from(["a", "b", "id", "x"]), st.text(alphabet="abc123", min_size=0, max_size=5)
+)
+_QUERY = st.lists(_QUERY_PAIR, max_size=4)
+
+
+@given(
+    scheme=st.sampled_from(["http", "https"]),
+    host=_HOST,
+    port=st.one_of(st.none(), st.integers(min_value=1, max_value=65535)),
+    path=_PATH,
+    query=_QUERY,
+)
+@settings(max_examples=200)
+def test_normalization_is_idempotent(
+    scheme: str, host: str, port: int | None, path: str, query: list[tuple[str, str]]
+) -> None:
+    """normalize(normalize(x)) == normalize(x) (AGENTFW_CONTEXT.md §3.6) — checked against
+    pep/normalize.py's real normalize_url() over a range of hosts (incl. mixed case, IDN-shaped
+    labels), traversal- and percent-encoded paths, ports, and duplicate query keys."""
+    netloc = host + (f":{port}" if port else "")
+    query_string = "&".join(f"{k}={v}" for k, v in query)
+    raw_url = f"{scheme}://{netloc}{path}" + (f"?{query_string}" if query_string else "")
+
+    once = normalize_url(raw_url)
+    twice = normalize_url(once.url)
+    assert twice == once

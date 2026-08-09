@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
 import uuid
 from datetime import UTC, datetime
@@ -19,6 +21,12 @@ from datetime import UTC, datetime
 import httpx
 
 EVENTSTORE_URL = os.environ.get("EVENTSTORE_URL", "http://eventstore:8090")
+# WHY the same logger name as pep/proxy.py, not `__name__`: this listener is the same enforcement
+# point as the main PEP, just on a second port — its events belong in the identical, single
+# observable stream `docker compose logs pep` shows, not a same-shaped-but-separate one. Logging
+# is configured once, in pep/proxy.py (which imports this module before the server starts); this
+# just asks for the same named logger, per Python's usual getLogger-is-a-singleton behavior.
+event_logger = logging.getLogger("agentfw.pep")
 _STAGES = (
     "identity",
     "normalize",
@@ -69,10 +77,17 @@ def _log_bypass(destination: str, request_line: str) -> None:
         "reason": "BYPASS_ATTEMPTED",
         "latency_ms": dict.fromkeys(_STAGES, 0.0),
     }
+    # WHY stdout first, unconditionally: this is the fix for the verified gap — a bypass attempt
+    # was being denied correctly but was invisible in `docker compose logs pep`, because the only
+    # thing that ever happened was an HTTP POST to a different container. This makes the denial
+    # attributable from the PEP's own container log alone, with no dependency on eventstore being
+    # reachable (there is no decision left to protect by withholding this one — the connection is
+    # already being denied either way).
+    event_logger.info(json.dumps(event))
     try:
         httpx.post(f"{EVENTSTORE_URL}/events", json=event, timeout=5.0)
     except httpx.HTTPError:
-        pass  # WHY still deny even if logging fails: bypass_proxy has no action to release.
+        pass  # WHY still deny even if durable logging fails: nothing here to release regardless.
 
 
 async def serve(host: str = "0.0.0.0", port: int = 8081) -> None:

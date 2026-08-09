@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -14,11 +16,22 @@ from fastapi import FastAPI, Header, Request
 from pydantic import BaseModel
 
 from pep.bypass_proxy import serve as serve_bypass_proxy
+from pep.normalize import normalize_url
 from pep.pipeline import ACTION_MAP, BUNDLE, PipelineResult, extract_target, run_pipeline
 from policy.engine import EXECUTABLE_DECISIONS, Decision
 
 EVENTSTORE_URL = os.environ.get("EVENTSTORE_URL", "http://eventstore:8090")
 SCHEMA_VERSION = "1.0"
+
+# WHY this exists: durable storage (the POST to eventstore below) and container-log observability
+# are two different failure domains — `docker compose logs pep` was previously blind to every
+# decision the PEP made, bypass-listener or not, because nothing was ever written to this
+# process's own stdout. AGENTFW_CONTEXT.md §7 already calls for "one JSON event per decision";
+# this is what actually makes that observable without needing the eventstore reachable at all.
+# "agentfw.pep" (not `__name__`) so pep/bypass_proxy.py logs through the identical logger, not a
+# same-shaped but distinct one — one mechanism, not two that happen to look alike.
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+event_logger = logging.getLogger("agentfw.pep")
 
 
 @asynccontextmanager
@@ -85,6 +98,7 @@ def tool_call(
             result.risk_score,
             result.risk_factors,
             result.latency_ms,
+            result.normalized_arguments,
         )
         # Best-effort: if this second write also fails, the caller still gets DENY below — there
         # is no third attempt, and no path back to releasing the original action.
@@ -100,7 +114,10 @@ def tool_call(
 
     tool_result = None
     if result.decision in EXECUTABLE_DECISIONS:
-        tool_result = _execute(req.tool, req.arguments)
+        # WHY normalized_arguments, not req.arguments: the canonical form is what gets forwarded,
+        # never the caller's original (AGENTFW_CONTEXT.md §2 stage 2) — this is the one place in
+        # the whole request path where that distinction is actually load-bearing.
+        tool_result = _execute(req.tool, result.normalized_arguments)
 
     return {
         "decision": result.decision.name,
@@ -111,7 +128,11 @@ def tool_call(
 
 
 def _build_event(req: ToolCallRequest, result: PipelineResult) -> dict[str, Any]:
-    fqdn, resource = extract_target(req.tool, req.arguments)
+    # WHY normalized_arguments here too, not req.arguments: an event describing what was actually
+    # evaluated and forwarded must reflect the canonical form, not the caller's original — that's
+    # the whole point of running normalization before policy (AGENTFW_CONTEXT.md §2 stage 2).
+    arguments = result.normalized_arguments or req.arguments
+    fqdn, resource = extract_target(req.tool, arguments)
     return {
         "schema_version": SCHEMA_VERSION,
         "timestamp": datetime.now(UTC).isoformat(),
@@ -121,7 +142,7 @@ def _build_event(req: ToolCallRequest, result: PipelineResult) -> dict[str, Any]
         "role": result.role or "unknown",
         "tool": req.tool,
         "action": ACTION_MAP.get(req.tool, "unknown"),
-        "destination": _destination_dict(req.tool, req.arguments, fqdn),
+        "destination": _destination_dict(req.tool, arguments, fqdn),
         "resource": resource,
         "data_classification": result.data_classification,
         "session_taint": result.session_taint,
@@ -136,22 +157,27 @@ def _build_event(req: ToolCallRequest, result: PipelineResult) -> dict[str, Any]
 
 
 def _destination_dict(tool: str, arguments: dict[str, Any], fqdn: str | None) -> dict[str, Any]:
-    if not fqdn:
+    if not fqdn or not tool.startswith("http."):
         return {"fqdn": None, "ip": None, "port": None, "protocol": None}
-    url = arguments.get("url", "")
+    # WHY normalize_url again here rather than string-prefix-checking arguments["url"]: the
+    # previous check (`url.startswith("https")`) was case-sensitive and would misclassify a
+    # differently-cased scheme — normalize_url is idempotent (tests/test_normalize.py), so calling
+    # it again on an already-canonical URL is cheap and correct rather than re-deriving by hand.
+    canonical = normalize_url(arguments.get("url", ""))
     return {
         "fqdn": fqdn,
         "ip": None,  # WHY None: FQDN pinning (resolve-then-connect-to-that-IP) is not in scope.
-        "port": 443 if url.startswith("https") else 80,
-        "protocol": "https"
-        if url.startswith("https")
-        else "http"
-        if tool.startswith("http.")
-        else None,
+        "port": canonical.port or (443 if canonical.scheme == "https" else 80),
+        "protocol": canonical.scheme,
     }
 
 
 def _log_event(event: dict[str, Any]) -> bool:
+    # WHY logged to stdout before the durable-write attempt, unconditionally: container-log
+    # observability must not depend on the eventstore being reachable — that's the exact failure
+    # mode log-or-deny (invariant §3.4) already denies the action for, and an operator watching
+    # `docker compose logs pep` during that outage still needs to see what was decided and why.
+    event_logger.info(json.dumps(event))
     try:
         resp = httpx.post(f"{EVENTSTORE_URL}/events", json=event, timeout=5.0)
         return resp.status_code == 201
