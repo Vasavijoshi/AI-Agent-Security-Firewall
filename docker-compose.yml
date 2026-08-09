@@ -1,0 +1,59 @@
+# Topology only for this milestone — no Dockerfiles exist yet (M1 builds them), so `docker compose up`
+# is not expected to succeed yet. What must already be correct is the network split in
+# AGENTFW_CONTEXT.md §5: agent-net has no internet route, pep is the only dual-homed container.
+
+networks:
+  agent-net:
+    internal: true # WHY: no default route to the internet at all — this is the L3 non-bypassability
+    # proof. `docker compose exec agent curl https://example.com` must fail here even
+    # if the agent process is fully compromised.
+  egress-net:
+    driver: bridge # WHY: normal bridge — this is where the internet-reachable and internal-only
+    # backing services (eventstore, dashboard) live, fronted only by the pep.
+
+services:
+  agent:
+    build: ./agent # Dockerfile added in M1
+    networks: [agent-net]
+    environment:
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      HTTP_PROXY: http://pep:8080
+      HTTPS_PROXY: http://pep:8080
+      # WHY: this is the whole enforcement story in two lines — the agent has no other
+      # configured route out, and agent-net physically has no other route out either.
+    depends_on: [pep]
+
+  pep:
+    build: ./pep # Dockerfile added in M1
+    networks: [agent-net, egress-net] # WHY: the ONLY dual-homed container (§5) — every
+    # byte the agent sends outward crosses this boundary.
+    environment:
+      EVENTSTORE_URL: http://eventstore:8090
+      POLICY_BUNDLE_PATH: /app/policy/bundles/default.yaml
+    depends_on: [eventstore]
+
+  eventstore:
+    build: ./events # Dockerfile added in M1
+    networks: [egress-net]
+    volumes:
+      - eventstore-data:/data
+    environment:
+      # WHY SQLite over Postgres: the durable-log requirement in AGENTFW_CONTEXT.md §3 (log-or-deny)
+      # needs fsync-before-release, not concurrent multi-writer access — the pep is the only writer.
+      # SQLite is stdlib (sqlite3), so it costs zero dependency-budget slots, needs no separate DB
+      # engine/container to configure, and keeps the "clone and run, no API key, no cloud account"
+      # acceptance test as close to zero moving parts as the durability invariant allows.
+      EVENTSTORE_DB_PATH: /data/events.db
+
+  dashboard:
+    build: ./dashboard # Dockerfile added in M1
+    networks: [egress-net] # WHY: only needs to read the event store, never touches agent-net
+    environment:
+      EVENTSTORE_URL: http://eventstore:8090
+    ports:
+      - "8501:8501" # the one port a human on the host actually needs
+    depends_on: [eventstore]
+
+volumes:
+  eventstore-data:

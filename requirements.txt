@@ -1,0 +1,44 @@
+# AgentFW dependency budget: 12 packages max (AGENTFW_CONTEXT.md §1). Currently at 12/12.
+# Every addition needs a justification here and a green light in chat before it's added.
+
+# PEP proxy framework — async, and its request/response models (Pydantic, transitive) give the
+# DecisionRequest/Event schemas free validation without a 13th top-level dependency.
+fastapi==0.115.5
+
+# ASGI server that runs the FastAPI app (pep/proxy.py, events/store.py, eventually dashboard's API).
+uvicorn==0.32.1
+
+# Async HTTP client: the agent's tool calls and the PEP's egress forwarding both need it.
+httpx==0.27.2
+
+# Policy bundles are authored as YAML (policy/bundles/*.yaml) — reviewability is a stated security
+# property in AGENTFW_CONTEXT.md, and YAML is what a human reviews in a policy PR.
+pyyaml==6.0.2
+
+# Real LLM provider (agent/providers.py: AnthropicProvider). Never imported when LLM_PROVIDER=mock,
+# so the no-API-key run path does not depend on it being configured, only installed.
+anthropic==0.39.0
+
+# Ed25519 signing for short-lived workload tokens (identity/issuer.py) and policy bundle signatures
+# (policy/compiler.py) — stdlib has no Ed25519 primitive.
+cryptography==43.0.3
+
+# Statistical anomaly detection for the risk/behavior scorer (EWMA z-scores, bigram frequency) —
+# explicitly allowed in place of an ML framework (AGENTFW_CONTEXT.md §1).
+numpy==2.1.3
+
+# Dashboard (dashboard/app.py) — 200 lines, no frontend build step, per AgentFW_Build_Plan_v2.md §4.
+streamlit==1.40.1
+
+# Test runner for tests/ and evals/ — the invariant suite and policy regression suite both run on it.
+pytest==8.3.3
+
+# Property-based testing for the 6 invariants in AGENTFW_CONTEXT.md §3, most importantly lattice
+# monotonicity — a fixed example set can't cover "for every possible pair."
+hypothesis==6.115.5
+
+# Linter, line length 100 (pyproject.toml). Dev-only but still counted against the budget.
+ruff==0.7.4
+
+# Formatter, line length 100 (pyproject.toml). Dev-only but still counted against the budget.
+black==24.10.0

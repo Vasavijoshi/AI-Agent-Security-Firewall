@@ -1,0 +1,47 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Secrets ---
+.env
+
+# --- Databases (event store) ---
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# --- Dashboard cache ---
+.streamlit/
+dashboard/.cache/
+
+# --- Test / tooling caches ---
+.pytest_cache/
+.hypothesis/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# --- Editor / OS cruft ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Claude Code local settings ---
+.claude/settings.local.json
