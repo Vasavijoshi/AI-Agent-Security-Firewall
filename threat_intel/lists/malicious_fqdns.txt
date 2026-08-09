@@ -1,0 +1,6 @@
+# Known-bad FQDNs for local threat-intel lookup (AGENTFW_CONTEXT.md §2 stage 4). One per line,
+# exact or parent-domain match (threat_intel/feed.py). Reused across mock scenarios and attack
+# scripts for continuity — evil.example.com is the same destination A6's injected instruction
+# tries to POST to.
+evil.example.com
+known-c2.example

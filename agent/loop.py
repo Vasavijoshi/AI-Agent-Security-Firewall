@@ -24,9 +24,7 @@ class TurnLog:
     detail: str
 
 
-def run(
-    agent_id: str, scenario: str | None = None, provider: Provider | None = None
-) -> list[TurnLog]:
+def run(scenario: str | None = None, provider: Provider | None = None) -> list[TurnLog]:
     """Drive one agent session to completion (or MAX_ITERATIONS) and return what happened.
 
     Every tool call the provider requests is dispatched through the PEP; there is no code path
@@ -52,11 +50,7 @@ def run(
             trace_id = str(uuid.uuid4())
             try:
                 decision, result = dispatch(
-                    call.name,
-                    call.arguments,
-                    agent_id=agent_id,
-                    session_id=session_id,
-                    trace_id=trace_id,
+                    call.name, call.arguments, session_id=session_id, trace_id=trace_id
                 )
                 log.append(
                     TurnLog(

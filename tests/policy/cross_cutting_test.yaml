@@ -1,0 +1,21 @@
+# Cross-role fixtures: default-deny and rule-matching edge cases that aren't specific to one role.
+
+- name: unknown role has no rules at all — default-deny by construction, not a special case
+  given: { role: intern_agent, tool: http.get, fqdn: api.trusted-news.com, taint: clean }
+  expect: { decision: DENY, policy_id: DEFAULT_DENY }
+
+- name: unknown destination for a real role is default-deny, not an error
+  given: { role: research_agent, tool: http.get, fqdn: totally-unlisted.example, taint: clean }
+  expect: { decision: DENY, policy_id: DEFAULT_DENY }
+
+- name: a tool no rule mentions at all is default-deny
+  given: { role: research_agent, tool: db.write, resource: customers, taint: clean }
+  expect: { decision: DENY, policy_id: DEFAULT_DENY }
+
+- name: a rule may reference a tool outside the actual 5-tool set (forward-compat, still enforced)
+  given: { role: research_agent, tool: http.put, fqdn: api.trusted-news.com, taint: clean }
+  expect: { decision: DENY, policy_id: R-RESEARCH-002 }
+
+- name: taint ceiling is structural — it fires even though the matched rule nominally covers tainted
+  given: { role: support_agent, tool: db.query, resource: customers, taint: tainted }
+  expect: { decision: DENY, reason: taint_ceiling, policy_id: R-SUPPORT-001 }

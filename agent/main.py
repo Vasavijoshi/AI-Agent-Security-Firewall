@@ -8,17 +8,14 @@ Exited(0); that's expected, not a crash. `docker compose logs agent` is how you 
 from __future__ import annotations
 
 import json
-import os
 import sys
 from dataclasses import asdict
 
 from agent.loop import run
 
-AGENT_ID = os.environ.get("AGENT_ID", "research-agent-01")
-
 
 def main() -> int:
-    log = run(AGENT_ID)
+    log = run()
     for entry in log:
         print(json.dumps(asdict(entry)), flush=True)
     denied = [e for e in log if e.decision not in ("ALLOW", "ALLOW_REDACTED")]

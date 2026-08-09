@@ -3,7 +3,13 @@ tie-break by rule ID."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import IntEnum
+from fnmatch import fnmatch
+from pathlib import Path
+from typing import Any
+
+import yaml
 
 
 class Decision(IntEnum):
@@ -23,8 +29,163 @@ class Decision(IntEnum):
     ALLOW = 5
 
 
-# WHY: rule-based evaluation (YAML bundle -> compiled decision tree, conflict/shadow detection) is
-# M2 scope (AGENTFW_CONTEXT.md §9). M1's PEP uses a small hardcoded table instead — see
-# pep/pipeline.py — because M1's stated deliverable is "hardcoded allow/deny", not a stand-in for
-# the real engine. Only the Decision vocabulary is shared ahead of time, since events/schema.json,
-# pep/pipeline.py, and tests/test_invariants.py all need one common definition of it.
+# WHY RATE_LIMIT is in this set and REQUIRE_APPROVAL/QUARANTINE are not: per the lattice's own
+# semantics (AgentFW_Architecture_v1.md §15), RATE_LIMIT and ALLOW_REDACTED are both "the call
+# happens, with a caveat" — throttled or redacted, but not held. REQUIRE_APPROVAL means "a human
+# has to say yes" and QUARANTINE means the agent itself is being cut off; neither of those is
+# something this project has a workflow for yet (no approval queue, no quarantine automation), so
+# for now they simply don't execute — which is the safe default for "not yet implemented," not a
+# silent behavior gap. Actual rate-limiting (throttling repeat calls) also isn't implemented here;
+# RATE_LIMIT executes the call now and narrows future risk scoring via the denial-streak-style
+# factors, which is the honest scope for this milestone.
+EXECUTABLE_DECISIONS = frozenset({Decision.ALLOW, Decision.ALLOW_REDACTED, Decision.RATE_LIMIT})
+
+# WHY exactly these two tools: they're the only "write"-shaped tools in the actual 5-tool set
+# (agent/tools.py) — db.write/db.delete/http.put appear in the architecture doc but were never
+# implemented as real tools, so including them here would be untestable dead weight.
+WRITE_TOOLS = frozenset({"http.post", "email.send"})
+_HIGH_DATA_CLASSES = frozenset({"confidential", "secret"})
+
+
+@dataclass(frozen=True)
+class Rule:
+    id: str
+    priority: int
+    role: str
+    tool: tuple[str, ...]
+    effect: Decision
+    critical_path: bool = False
+    destination: tuple[str, ...] | None = None
+    resource: tuple[str, ...] | None = None
+    max_data_class: str | None = None
+    session_taint: tuple[str, ...] | None = None
+    inspect: bool = False
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class Bundle:
+    version: str
+    not_valid_after: str
+    fail_safe_after: int
+    rules: tuple[Rule, ...]
+
+
+@dataclass(frozen=True)
+class EvalResult:
+    decision: Decision
+    policy_id: str
+    reason: str
+    max_data_class: str | None
+    inspect: bool
+
+
+def load_bundle(path: str | Path) -> Bundle:
+    """Parse a policy bundle YAML file. Raises ValueError on structurally invalid rules.
+
+    WHY this stays separate from policy/compiler.py: loading a bundle into usable Rule objects and
+    *validating that the ruleset makes sense* (conflicts, shadowing, unknown roles) are different
+    jobs with different audiences — the engine needs the former at request time, the compiler needs
+    the latter at build/CI time. Conflating them would make the engine pay compiler costs on every
+    request.
+    """
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    rules = tuple(_parse_rule(r) for r in raw["rules"])
+    meta = raw["metadata"]
+    return Bundle(
+        version=str(meta["version"]),
+        not_valid_after=str(meta["not_valid_after"]),
+        fail_safe_after=int(meta["fail_safe_after"]),
+        rules=rules,
+    )
+
+
+def _parse_rule(raw: dict[str, Any]) -> Rule:
+    effect = raw["effect"]
+    if effect not in ("ALLOW", "DENY"):
+        raise ValueError(f"rule {raw.get('id')!r}: effect must be ALLOW or DENY, got {effect!r}")
+    conditions = raw.get("conditions") or {}
+    return Rule(
+        id=raw["id"],
+        priority=int(raw["priority"]),
+        role=raw["role"],
+        tool=tuple(raw["tool"]),
+        effect=Decision[effect],
+        critical_path=bool(raw.get("critical_path", False)),
+        destination=tuple(raw["destination"]) if "destination" in raw else None,
+        resource=tuple(raw["resource"]) if "resource" in raw else None,
+        max_data_class=conditions.get("max_data_class"),
+        session_taint=tuple(conditions["session_taint"]) if "session_taint" in conditions else None,
+        inspect=bool(raw.get("inspect", False)),
+        reason=str(raw.get("reason", "")),
+    )
+
+
+def evaluate(
+    bundle: Bundle,
+    *,
+    role: str,
+    tool: str,
+    fqdn: str | None,
+    resource: str | None,
+    session_taint: str,
+) -> EvalResult:
+    """Evaluate one request against a loaded bundle. Deterministic: same inputs, same bundle,
+    same output — matching walks `bundle.rules` in file order and the winner is chosen by an
+    explicit sort key, never by dict/set iteration (invariant §3.3)."""
+    candidates = [
+        r
+        for r in bundle.rules
+        if r.role == role
+        and tool in r.tool
+        and _matches_target(r, fqdn, resource)
+        and _matches_taint(r, session_taint)
+    ]
+    deny = [r for r in candidates if r.effect == Decision.DENY]
+    allow = [r for r in candidates if r.effect == Decision.ALLOW]
+
+    if deny:
+        winner = _pick_winner(deny)
+        return EvalResult(
+            Decision.DENY, winner.id, "matched_explicit_deny", winner.max_data_class, winner.inspect
+        )
+    if not allow:
+        return EvalResult(Decision.DENY, "DEFAULT_DENY", "no_matching_rule", None, False)
+
+    winner = _pick_winner(allow)
+
+    # --- taint ceiling: structural and non-overridable (AGENTFW_CONTEXT.md §10) ---
+    # WHY this lives here and not as another rule condition only: a rule author forgetting to add
+    # a session_taint condition must not accidentally open an exfil path. This check runs
+    # regardless of what any individual rule declares — rule-level session_taint conditions (used
+    # throughout default.yaml) are an *additional*, finer-grained restriction on top of this, not
+    # a substitute for it.
+    if session_taint == "tainted" and (
+        tool in WRITE_TOOLS or winner.max_data_class in _HIGH_DATA_CLASSES
+    ):
+        return EvalResult(
+            Decision.DENY, winner.id, "taint_ceiling", winner.max_data_class, winner.inspect
+        )
+
+    return EvalResult(
+        Decision.ALLOW, winner.id, "matched_explicit_allow", winner.max_data_class, winner.inspect
+    )
+
+
+def _matches_target(rule: Rule, fqdn: str | None, resource: str | None) -> bool:
+    if rule.destination is not None:
+        return fqdn is not None and any(fnmatch(fqdn, pat) for pat in rule.destination)
+    if rule.resource is not None:
+        return resource is not None and any(fnmatch(resource, pat) for pat in rule.resource)
+    return True  # no restriction declared -> matches any target for this role+tool
+
+
+def _matches_taint(rule: Rule, session_taint: str) -> bool:
+    return rule.session_taint is None or session_taint in rule.session_taint
+
+
+def _pick_winner(rules: list[Rule]) -> Rule:
+    # WHY -priority (not priority) as the primary sort key: `min()` with this key picks the
+    # *highest* priority number first, then the lexicographically smallest id as the deterministic
+    # tie-break — both are stated requirements, not incidental.
+    return min(rules, key=lambda r: (-r.priority, r.id))

@@ -1,0 +1,29 @@
+# given/expect fixtures for support_agent, run by tests/test_policy_cases.py.
+
+- name: may read the customers table while clean
+  given: { role: support_agent, tool: db.query, resource: customers, taint: clean }
+  expect: { decision: ALLOW, policy_id: R-SUPPORT-001 }
+
+- name: taint ceiling blocks the customers read once tainted, even though the rule allows tainted
+  given: { role: support_agent, tool: db.query, resource: customers, taint: tainted }
+  expect: { decision: DENY, reason: taint_ceiling }
+
+- name: may reply through the approved helpdesk address while clean
+  given: { role: support_agent, tool: email.send, resource: reply@approved-helpdesk.com, taint: clean }
+  expect: { decision: ALLOW, policy_id: R-SUPPORT-002 }
+
+- name: may not email at all once tainted — rule's own taint condition excludes it
+  given: { role: support_agent, tool: email.send, resource: reply@approved-helpdesk.com, taint: tainted }
+  expect: { decision: DENY, policy_id: DEFAULT_DENY }
+
+- name: denied reading the HR table
+  given: { role: support_agent, tool: db.query, resource: hr_salaries, taint: clean }
+  expect: { decision: DENY, policy_id: R-SUPPORT-003 }
+
+- name: denied reading the credentials table
+  given: { role: support_agent, tool: db.query, resource: credentials, taint: clean }
+  expect: { decision: DENY, policy_id: R-SUPPORT-003 }
+
+- name: denied outbound POST — may only leave data via the approved helpdesk email rule
+  given: { role: support_agent, tool: http.post, fqdn: anywhere.example.com, taint: clean }
+  expect: { decision: DENY, policy_id: R-SUPPORT-004 }

@@ -1,0 +1,29 @@
+# given/expect fixtures for finance_agent, run by tests/test_policy_cases.py.
+
+- name: may POST to the approved ERP while its session is clean
+  given: { role: finance_agent, tool: http.post, fqdn: api.approved-erp.com, taint: clean }
+  expect: { decision: ALLOW, policy_id: R-FINANCE-001 }
+
+- name: may not POST to the ERP once its session is tainted
+  given: { role: finance_agent, tool: http.post, fqdn: api.approved-erp.com, taint: tainted }
+  expect: { decision: DENY, policy_id: DEFAULT_DENY }
+
+- name: may read its own ledger table
+  given: { role: finance_agent, tool: db.query, resource: ledger, taint: clean }
+  expect: { decision: ALLOW, policy_id: R-FINANCE-002 }
+
+- name: may read its own invoices table
+  given: { role: finance_agent, tool: db.query, resource: invoices, taint: clean }
+  expect: { decision: ALLOW, policy_id: R-FINANCE-002 }
+
+- name: denied general internet browsing — no browsing charter
+  given: { role: finance_agent, tool: http.get, fqdn: news.example.com, taint: clean }
+  expect: { decision: DENY, policy_id: R-FINANCE-003 }
+
+- name: denied sending email — unaudited exfil channel
+  given: { role: finance_agent, tool: email.send, resource: someone@example.com, taint: clean }
+  expect: { decision: DENY, policy_id: R-FINANCE-004 }
+
+- name: denied local file access — no charter for it
+  given: { role: finance_agent, tool: file.read, resource: /etc/passwd, taint: clean }
+  expect: { decision: DENY, policy_id: R-GLOBAL-002 }

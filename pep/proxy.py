@@ -2,43 +2,46 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, Header
+from fastapi import FastAPI, Header, Request
 from pydantic import BaseModel
 
-from pep.pipeline import PipelineResult, run_pipeline
-from policy.engine import Decision
+from pep.bypass_proxy import serve as serve_bypass_proxy
+from pep.pipeline import ACTION_MAP, BUNDLE, PipelineResult, extract_target, run_pipeline
+from policy.engine import EXECUTABLE_DECISIONS, Decision
 
 EVENTSTORE_URL = os.environ.get("EVENTSTORE_URL", "http://eventstore:8090")
 SCHEMA_VERSION = "1.0"
-# WHY "m1-hardcoded", not a version number: real policy_bundle_version is a strictly monotonic
-# version stamped on a signed YAML bundle (M2). M1 has no bundle to version — this sentinel makes
-# that visible in every logged event rather than faking a version that doesn't exist.
-POLICY_BUNDLE_VERSION = "m1-hardcoded"
 
-ACTION_MAP = {
-    "http.get": "read",
-    "http.post": "write",
-    "db.query": "read",
-    "file.read": "read",
-    "email.send": "write",
-}
 
-app = FastAPI(title="AgentFW PEP")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # WHY a background task in this process rather than a second container: the bypass proxy is
+    # the same enforcement point, just listening on a second port (M1 gap #3 resolution) — it
+    # shares the PEP's event-logging path and has no state of its own to isolate.
+    task = asyncio.create_task(serve_bypass_proxy())
+    yield
+    task.cancel()
+
+
+app = FastAPI(title="AgentFW PEP", lifespan=_lifespan)
 
 
 class ToolCallRequest(BaseModel):
-    agent_id: str
     session_id: str
     trace_id: str
     tool: str
     arguments: dict[str, Any]
+    # WHY no agent_id field: identity comes entirely from the verified Authorization token
+    # (AGENTFW_CONTEXT.md §2) — a field here would just be a claim an attacker fully controlling
+    # the request body could lie about. The event's agent_id is the token's own identifier.
 
 
 @app.get("/health")
@@ -48,9 +51,18 @@ def health() -> dict[str, str]:
 
 @app.post("/v1/tool-call")
 def tool_call(
-    req: ToolCallRequest, x_agent_id: str | None = Header(default=None)
+    req: ToolCallRequest, request: Request, authorization: str | None = Header(default=None)
 ) -> dict[str, Any]:
-    result = run_pipeline(req.agent_id, req.tool, header_agent_id=x_agent_id)
+    token = authorization.removeprefix("Bearer ") if authorization else None
+    peer_ip = request.client.host if request.client else None
+
+    result = run_pipeline(
+        token=token,
+        peer_ip=peer_ip,
+        session_id=req.session_id,
+        tool=req.tool,
+        arguments=req.arguments,
+    )
 
     t0 = time.perf_counter()
     event = _build_event(req, result)
@@ -67,6 +79,11 @@ def tool_call(
             "event_store_write_failed",
             result.policy_id,
             result.role,
+            result.agent_key,
+            result.session_taint,
+            result.data_classification,
+            result.risk_score,
+            result.risk_factors,
             result.latency_ms,
         )
         # Best-effort: if this second write also fails, the caller still gets DENY below — there
@@ -82,7 +99,7 @@ def tool_call(
     event["latency_ms"]["total"] += log_ms
 
     tool_result = None
-    if result.decision in (Decision.ALLOW, Decision.ALLOW_REDACTED):
+    if result.decision in EXECUTABLE_DECISIONS:
         tool_result = _execute(req.tool, req.arguments)
 
     return {
@@ -94,61 +111,44 @@ def tool_call(
 
 
 def _build_event(req: ToolCallRequest, result: PipelineResult) -> dict[str, Any]:
-    destination = _extract_destination(req.tool, req.arguments)
+    fqdn, resource = extract_target(req.tool, req.arguments)
     return {
         "schema_version": SCHEMA_VERSION,
         "timestamp": datetime.now(UTC).isoformat(),
         "trace_id": req.trace_id,
         "session_id": req.session_id,
-        "agent_id": req.agent_id,
+        "agent_id": result.agent_key,
         "role": result.role or "unknown",
         "tool": req.tool,
         "action": ACTION_MAP.get(req.tool, "unknown"),
-        "destination": destination,
-        "resource": _extract_resource(req.tool, req.arguments),
-        # WHY "internal" as the M1 default, not "public": DLP-driven classification (stage 5) is
-        # M2 scope. Until real classification exists, defaulting to a middling, non-public value
-        # is the fail-static choice — an under-classified event is a bigger problem than an
-        # over-classified one.
-        "data_classification": "internal",
-        # WHY "clean" fixed: taint tracking (invariant §3.5) is M2 scope (identity/issuer.py +
-        # taint state don't exist yet). Fixing it at "clean" rather than modeling it keeps this
-        # field honest — it says "not evaluated," not "evaluated and safe."
-        "session_taint": "clean",
-        "risk_score": 0,
-        "risk_factors": [],
+        "destination": _destination_dict(req.tool, req.arguments, fqdn),
+        "resource": resource,
+        "data_classification": result.data_classification,
+        "session_taint": result.session_taint,
+        "risk_score": result.risk_score,
+        "risk_factors": result.risk_factors,
         "policy_id": result.policy_id,
-        "policy_bundle_version": POLICY_BUNDLE_VERSION,
+        "policy_bundle_version": BUNDLE.version,
         "decision": result.decision.name,
         "reason": result.reason,
         "latency_ms": dict(result.latency_ms),
     }
 
 
-def _extract_destination(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    url = arguments.get("url") if tool.startswith("http.") else None
-    if not url:
+def _destination_dict(tool: str, arguments: dict[str, Any], fqdn: str | None) -> dict[str, Any]:
+    if not fqdn:
         return {"fqdn": None, "ip": None, "port": None, "protocol": None}
-    parsed = urlparse(url)
+    url = arguments.get("url", "")
     return {
-        "fqdn": parsed.hostname,
-        "ip": None,  # WHY None: FQDN pinning (resolve-then-connect-to-that-IP) is M2 scope.
-        "port": parsed.port or (443 if parsed.scheme == "https" else 80),
-        "protocol": parsed.scheme or None,
+        "fqdn": fqdn,
+        "ip": None,  # WHY None: FQDN pinning (resolve-then-connect-to-that-IP) is not in scope.
+        "port": 443 if url.startswith("https") else 80,
+        "protocol": "https"
+        if url.startswith("https")
+        else "http"
+        if tool.startswith("http.")
+        else None,
     }
-
-
-def _extract_resource(tool: str, arguments: dict[str, Any]) -> str | None:
-    if tool.startswith("http."):
-        parsed = urlparse(arguments.get("url", ""))
-        return parsed.path or None
-    if tool == "db.query":
-        return arguments.get("query")
-    if tool == "file.read":
-        return arguments.get("path")
-    if tool == "email.send":
-        return arguments.get("to")
-    return None
 
 
 def _log_event(event: dict[str, Any]) -> bool:

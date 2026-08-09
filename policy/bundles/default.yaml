@@ -1,1 +1,182 @@
-# Default policy bundle. Rules land here in M2 (policy/engine.py + policy/compiler.py).
+# Default policy bundle (M2). Rule shape is this project's own, informed by but not identical to
+# AgentFW_Architecture_v1.md §6 (that doc's OPA/Rego backend is explicitly cut — AGENTFW_CONTEXT.md
+# §1 — this compiles to policy/engine.py's plain-Python evaluator instead).
+#
+# Resolution order (policy/engine.py, per the resolved M2 ruling): explicit DENY > explicit ALLOW
+# > implicit DENY. Within one effect, highest `priority` wins; ties break lexicographically on
+# rule `id`. Every role below carries at least one `critical_path: true` rule (policy/compiler.py
+# fails the build otherwise — see AGENTFW_CONTEXT.md §16 fail-tight semantics).
+#
+# Rule fields:
+#   role          — single role this rule applies to (no wildcard roles: an unlisted role has no
+#                   rules at all, which is default-deny by construction, not a special case)
+#   tool          — list of tool names this rule matches
+#   destination   — glob patterns matched against the request's fqdn (http.* tools only);
+#                   omit for tools with no network destination
+#   resource      — glob patterns matched against table name/path/recipient (db.query, file.read,
+#                   email.send respectively — db.query's arg is a structured `table`, not raw
+#                   SQL, precisely so this can match it); omit to match any resource
+#   conditions.max_data_class — this rule's own ceiling on what it may touch (also read by the
+#                   taint-ceiling check in policy/engine.py — see AGENTFW_CONTEXT.md §10)
+#   conditions.session_taint  — which taint states this rule is eligible under
+#   inspect       — forces DLP (stage 5) to run even on traffic that wouldn't otherwise trigger it
+#   effect        — ALLOW | DENY
+
+apiVersion: agentfw/v1
+kind: PolicyBundle
+metadata:
+  version: "2026.08.10-1"
+  not_valid_after: "2027-08-10T00:00:00Z"
+  fail_safe_after: 3600 # seconds — AGENTFW_CONTEXT.md §16 fail-static -> fail-tight horizon
+
+rules:
+  # --- research_agent: read-only, public/internal sources only ---
+  - id: R-RESEARCH-001
+    priority: 100
+    critical_path: true
+    role: research_agent
+    tool: [http.get]
+    destination: ["api.trusted-news.com", "*.arxiv.org"]
+    conditions: { max_data_class: internal, session_taint: [clean, tainted] }
+    effect: ALLOW
+    reason: research agent may read its approved news/preprint sources
+
+  - id: R-RESEARCH-002
+    priority: 200
+    role: research_agent
+    tool: [http.post, http.put, db.query]
+    conditions: { max_data_class: secret }
+    effect: DENY
+    reason: research_agent is read-only by charter — no writes, no DB access
+
+  # --- finance_agent: writes to one approved ERP, reads its own ledger, nothing else ---
+  - id: R-FINANCE-001
+    priority: 100
+    critical_path: true
+    role: finance_agent
+    tool: [http.post]
+    destination: ["api.approved-erp.com"]
+    conditions: { max_data_class: confidential, session_taint: [clean] }
+    inspect: true
+    effect: ALLOW
+    reason: finance agent may post to the approved ERP while its session is untainted
+
+  - id: R-FINANCE-002
+    priority: 110
+    role: finance_agent
+    tool: [db.query]
+    resource: ["ledger", "invoices"]
+    conditions: { max_data_class: confidential, session_taint: [clean, tainted] }
+    inspect: true
+    effect: ALLOW
+    reason: finance agent may read its own ledger/invoice tables
+
+  - id: R-FINANCE-003
+    priority: 200
+    role: finance_agent
+    tool: [http.get]
+    effect: DENY
+    reason: finance_agent has no browsing charter — outbound reads are not its job
+
+  - id: R-FINANCE-004
+    priority: 200
+    role: finance_agent
+    tool: [email.send]
+    effect: DENY
+    reason: email is an unaudited exfil channel this role has no approved use for
+
+  # --- support_agent: reads customer PII (redacted), replies to tickets, never writes/deletes ---
+  - id: R-SUPPORT-001
+    priority: 100
+    critical_path: true
+    role: support_agent
+    tool: [db.query]
+    resource: ["customers"]
+    conditions: { max_data_class: confidential, session_taint: [clean, tainted] }
+    inspect: true
+    effect: ALLOW
+    reason: support agent may read customer records to answer tickets
+
+  - id: R-SUPPORT-002
+    priority: 110
+    role: support_agent
+    tool: [email.send]
+    resource: ["*@approved-helpdesk.com"]
+    conditions: { max_data_class: internal, session_taint: [clean] }
+    effect: ALLOW
+    reason: support agent may reply through the approved helpdesk address while untainted
+
+  - id: R-SUPPORT-003
+    priority: 200
+    role: support_agent
+    tool: [db.query]
+    resource: ["hr_*", "credentials"]
+    conditions: { max_data_class: secret }
+    effect: DENY
+    reason: support has no charter for HR or credentials tables — customers.* only, via R-SUPPORT-001
+
+  - id: R-SUPPORT-004
+    priority: 200
+    role: support_agent
+    tool: [http.post, http.put]
+    effect: DENY
+    reason: support_agent may only leave data via the approved helpdesk email rule above
+
+  # --- admin_agent: broadest grants, still bounded — no free exfil even for admins ---
+  - id: R-ADMIN-001
+    priority: 100
+    critical_path: true
+    role: admin_agent
+    tool: [http.get]
+    destination: ["internal-admin.internal"]
+    # WHY internal, not secret: this is a critical_path rule — it exists to stay reachable in
+    # degraded modes, including a tainted session. The structural taint ceiling in
+    # policy/engine.py denies confidential-or-above access unconditionally while tainted
+    # (AGENTFW_CONTEXT.md §10), so pairing critical_path with max_data_class: secret here would
+    # make the declared session_taint: [clean, tainted] a dead letter — always overridden back to
+    # DENY the moment it matters. The console landing page itself is internal-sensitivity; the
+    # actually secret operations live behind R-ADMIN-002, which correctly requires an untainted
+    # session.
+    conditions: { max_data_class: internal, session_taint: [clean, tainted] }
+    effect: ALLOW
+    reason: admin agent may reach the internal admin console
+
+  - id: R-ADMIN-002
+    priority: 110
+    role: admin_agent
+    tool: [db.query]
+    resource: ["*"]
+    conditions: { max_data_class: secret, session_taint: [clean] }
+    inspect: true
+    effect: ALLOW
+    reason: admin agent may read any table while untainted, always inspected
+
+  - id: R-ADMIN-003
+    priority: 200
+    role: admin_agent
+    tool: [http.post, http.put]
+    effect: DENY
+    reason: no outbound POST/PUT destination is pre-approved for admin — add one explicitly, don't widen this
+
+  - id: R-ADMIN-004
+    priority: 200
+    role: admin_agent
+    tool: [email.send]
+    effect: DENY
+    reason: same reasoning as R-ADMIN-003 — email is an unaudited exfil channel
+
+  # --- global backstops: explicit, not left to implicit default-deny, so they're visible in an
+  #     audit of the bundle rather than only inferable from "no rule matched" ---
+  - id: R-GLOBAL-001
+    priority: 500
+    role: research_agent
+    tool: [email.send, file.read]
+    effect: DENY
+    reason: research_agent has no charter for either tool
+
+  - id: R-GLOBAL-002
+    priority: 500
+    role: finance_agent
+    tool: [file.read]
+    effect: DENY
+    reason: finance_agent has no charter for local file access

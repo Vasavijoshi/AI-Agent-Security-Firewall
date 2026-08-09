@@ -1,0 +1,26 @@
+# given/expect fixtures for research_agent, run by tests/test_policy_cases.py against the real
+# engine (policy/engine.py) and the real bundle (policy/bundles/default.yaml).
+
+- name: may read approved news source
+  given: { role: research_agent, tool: http.get, fqdn: api.trusted-news.com, taint: clean }
+  expect: { decision: ALLOW, policy_id: R-RESEARCH-001 }
+
+- name: may read an arxiv subdomain via the wildcard pattern
+  given: { role: research_agent, tool: http.get, fqdn: papers.arxiv.org, taint: clean }
+  expect: { decision: ALLOW, policy_id: R-RESEARCH-001 }
+
+- name: denied on an unlisted domain (default-deny, not an explicit rule)
+  given: { role: research_agent, tool: http.get, fqdn: random-blog-42.xyz, taint: clean }
+  expect: { decision: DENY, policy_id: DEFAULT_DENY }
+
+- name: may never write via POST — read-only charter
+  given: { role: research_agent, tool: http.post, fqdn: api.trusted-news.com, taint: clean }
+  expect: { decision: DENY, policy_id: R-RESEARCH-002 }
+
+- name: denied db access entirely — no DB charter
+  given: { role: research_agent, tool: db.query, resource: customers, taint: clean }
+  expect: { decision: DENY, policy_id: R-RESEARCH-002 }
+
+- name: may still read approved sources while its session is tainted
+  given: { role: research_agent, tool: http.get, fqdn: api.trusted-news.com, taint: tainted }
+  expect: { decision: ALLOW, policy_id: R-RESEARCH-001 }

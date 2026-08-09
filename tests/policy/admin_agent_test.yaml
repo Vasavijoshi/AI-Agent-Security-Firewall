@@ -1,0 +1,25 @@
+# given/expect fixtures for admin_agent, run by tests/test_policy_cases.py.
+
+- name: may reach the internal admin console while clean
+  given: { role: admin_agent, tool: http.get, fqdn: internal-admin.internal, taint: clean }
+  expect: { decision: ALLOW, policy_id: R-ADMIN-001 }
+
+- name: may still reach the internal admin console while tainted
+  given: { role: admin_agent, tool: http.get, fqdn: internal-admin.internal, taint: tainted }
+  expect: { decision: ALLOW, policy_id: R-ADMIN-001 }
+
+- name: may query any table while clean, always inspected
+  given: { role: admin_agent, tool: db.query, resource: anything_at_all, taint: clean }
+  expect: { decision: ALLOW, policy_id: R-ADMIN-002 }
+
+- name: denied db access once tainted — rule's own taint condition excludes it
+  given: { role: admin_agent, tool: db.query, resource: anything_at_all, taint: tainted }
+  expect: { decision: DENY, policy_id: DEFAULT_DENY }
+
+- name: denied outbound POST — no destination is pre-approved for admin, even admin
+  given: { role: admin_agent, tool: http.post, fqdn: anywhere.example.com, taint: clean }
+  expect: { decision: DENY, policy_id: R-ADMIN-003 }
+
+- name: denied sending email — same exfil reasoning as POST
+  given: { role: admin_agent, tool: email.send, resource: someone@example.com, taint: clean }
+  expect: { decision: DENY, policy_id: R-ADMIN-004 }

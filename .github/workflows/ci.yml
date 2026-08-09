@@ -1,11 +1,18 @@
 name: CI
 
-# WHY minimal at M1: only lint/format are meaningful right now — there's no application logic to
-# test yet. Expanded in M2 with pytest, the policy test suite, and the invariant suite
-# (AGENTFW_CONTEXT.md §9).
+# WHY four separate jobs, not one: each reports its own pass/fail in the GitHub UI — a broken
+# policy bundle should show up as "policy failed," not buried inside a generic "test failed."
+# That's the direct answer to "how do you test policies?" (AGENTFW_CONTEXT.md §9 M2 done-when: "a
+# deliberately broken policy PR fails the build").
+#
+# WHY ruff format, not black --check: AGENTFW_CONTEXT.md §7 (resolved M0) drops black in favor of
+# ruff format — one tool for lint and format, one fewer dependency-budget slot spent.
 on:
   push:
   pull_request:
+
+env:
+  LLM_PROVIDER: mock # AGENTFW_CONTEXT.md §1: the whole suite must pass with no API key at all.
 
 jobs:
   lint:
@@ -18,3 +25,25 @@ jobs:
       - run: pip install -r requirements.txt
       - run: ruff check .
       - run: ruff format --check .
+
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: python -m policy.compiler policy/bundles/default.yaml
+
+  test:
+    runs-on: ubuntu-latest
+    needs: [lint, policy] # WHY: no point running the suite against code that doesn't lint or a
+    # bundle that doesn't compile — fail fast on the cheaper checks first.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: pytest tests/ -v

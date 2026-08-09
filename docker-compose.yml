@@ -1,7 +1,7 @@
-# M1 vertical slice. The network split below is the load-bearing detail (AGENTFW_CONTEXT.md §5):
-# agent-net has no internet route at all; pep is the only dual-homed container. Every service
-# builds from the repo root as context (not its own subdirectory) because pep imports policy/ and
-# talks to eventstore over HTTP — a per-service build context couldn't see sibling packages.
+# M2 policy engine + identity. Network split (AGENTFW_CONTEXT.md §5): agent-net has no internet
+# route at all; pep is the only dual-homed container. Every service builds from the repo root as
+# context (not its own subdirectory) because pep/identity import sibling packages and talk to
+# eventstore over HTTP.
 
 networks:
   agent-net:
@@ -13,6 +13,28 @@ networks:
     # backing services (eventstore, dashboard) live, fronted only by the pep.
 
 services:
+  identity:
+    build:
+      context: .
+      dockerfile: identity/Dockerfile
+    networks: [agent-net] # WHY agent-net only: attestation and token issuance never need the
+    # internet — only the agent (to call /attest) and the pep (to fetch the public key) need to
+    # reach this service, and both already live on agent-net.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # WHY read-only, and why this is a real trade-off, not a free lunch: see the `# WHY:` block
+      # in identity/issuer.py. Mounting the socket gives this container visibility into every
+      # container on the host's Docker daemon, not just this project's — bigger blast radius than
+      # a "real" node attestor would have. Accepted for this scope; read-only limits it to
+      # inspect-only calls (we never issue a write/control call against the socket).
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request as u; u.urlopen('http://localhost:8082/health', timeout=2)"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 3s
+
   agent:
     build:
       context: .
@@ -22,16 +44,23 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-mock}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AGENTFW_SCENARIO: ${AGENTFW_SCENARIO:-m1_allowed_call}
-      AGENT_ID: research-agent-01
+      # WHY no AGENT_ID here: identity is attested via the Docker API (identity/issuer.py), not
+      # self-asserted by the agent — there is nothing left for an env var like this to configure.
       PEP_URL: http://pep:8080
-      HTTP_PROXY: http://pep:8080
-      HTTPS_PROXY: http://pep:8080
-      # WHY: this is the whole enforcement story in two lines — the agent has no other
-      # configured route out, and agent-net physically has no other route out either.
-      # (agent/tools.py talks to PEP_URL directly with trust_env=False for its own tool calls —
-      # see the WHY comment there. These vars stay set as the general-purpose belt for any code
-      # path that tries a raw outbound call instead of going through agent/tools.py.)
-    depends_on: [pep]
+      IDENTITY_ISSUER_URL: http://identity:8082
+      HTTP_PROXY: http://pep:8081
+      HTTPS_PROXY: http://pep:8081
+      # WHY port 8081, not 8080: 8080 is the PEP's JSON tool-call API that agent/tools.py calls
+      # directly (trust_env=False — see the WHY there). 8081 is the bypass-catch listener
+      # (pep/bypass_proxy.py) — it exists so that any code path which DOES honor these env vars
+      # (a library, an injected instruction, a compromised tool) gets a loud, attributable DENY
+      # instead of either a silent connection error or, worse, accidentally reaching pep's real
+      # API on 8080 without going through agent/tools.py's request shaping.
+    depends_on:
+      pep:
+        condition: service_healthy
+      identity:
+        condition: service_healthy
     # WHY no restart policy: the agent is a run-once batch job (agent/main.py) that plays one
     # scripted scenario and exits — it is expected to show Exited(0), not stay Up. Read its
     # output with `docker compose logs agent`.
@@ -44,9 +73,25 @@ services:
     # byte the agent sends outward crosses this boundary.
     environment:
       EVENTSTORE_URL: http://eventstore:8090
-      POLICY_BUNDLE_PATH: /app/policy/bundles/default.yaml # unused until M2's YAML engine exists;
-      # M1's decision table is hardcoded in pep/pipeline.py.
-    depends_on: [eventstore]
+      IDENTITY_ISSUER_URL: http://identity:8082
+      POLICY_BUNDLE_PATH: /app/policy/bundles/default.yaml
+    depends_on:
+      eventstore:
+        condition: service_healthy
+      identity:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request as u; u.urlopen('http://localhost:8080/health', timeout=2)"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 3s
+      # WHY this healthcheck exists at all: discovered during external verification that the
+      # agent could start before pep had finished booting and exit on httpx.ConnectError before
+      # pep ever came up. `depends_on` alone only orders container *starts*, not readiness — the
+      # `condition: service_healthy` above (on the agent/pep edges) is what actually closes the
+      # race, and it needs a real healthcheck to depend on.
 
   eventstore:
     build:
@@ -62,6 +107,13 @@ services:
       # engine/container to configure, and keeps the "clone and run, no API key, no cloud account"
       # acceptance test as close to zero moving parts as the durability invariant allows.
       EVENTSTORE_DB_PATH: /data/events.db
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request as u; u.urlopen('http://localhost:8090/health', timeout=2)"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 3s
 
   dashboard:
     build:
@@ -72,7 +124,9 @@ services:
       EVENTSTORE_URL: http://eventstore:8090
     ports:
       - "8501:8501" # the one port a human on the host actually needs
-    depends_on: [eventstore]
+    depends_on:
+      eventstore:
+        condition: service_healthy
 
 volumes:
   eventstore-data:

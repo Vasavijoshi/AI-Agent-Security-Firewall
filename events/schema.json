@@ -110,11 +110,11 @@
     },
     "risk_factors": {
       "type": "array",
-      "description": "Every contributing factor, non-negotiable — a risk score that can't explain itself is unresolvable at 3am.",
+      "description": "Every contributing factor, non-negotiable — a risk score that can't explain itself is unresolvable at 3am. human_reason added M2 (risk/scorer.py) so the factor vector is readable without cross-referencing the code table.",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["code", "points"],
+        "required": ["code", "points", "human_reason"],
         "properties": {
           "code": {
             "type": "string",
@@ -122,6 +122,10 @@
           },
           "points": {
             "type": "integer"
+          },
+          "human_reason": {
+            "type": "string",
+            "minLength": 1
           }
         }
       }

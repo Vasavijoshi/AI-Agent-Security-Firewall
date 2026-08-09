@@ -3,32 +3,30 @@ decide, log."""
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
+from typing import Any
+from urllib.parse import urlparse
 
-from policy.engine import Decision
+import httpx
 
-# WHY hardcoded here instead of in policy/engine.py: the real YAML-bundle-driven engine (rules
-# with priority, conflict/shadow detection) is M2 scope (AGENTFW_CONTEXT.md §9). This table IS
-# M1's stated deliverable ("hardcoded allow/deny"), not a stand-in for one — it gets deleted, not
-# refactored, when policy/engine.py grows a real evaluator.
-#
-# WHY this identity check is deliberately weak, and known to be: AGENTFW_CONTEXT.md §2 now
-# specifies the real mechanism (issuer container attests callers via the Docker API against
-# /var/run/docker.sock, mints Ed25519 tokens the agent never self-asserts) — that's identity/
-# issuer.py, M2 scope. Until it exists, this stage trusts a caller-supplied header matching a
-# static table, which any caller can forge by setting the header themselves. Stage 1 is real code
-# with a real (if temporary) gap, not a `# TODO: implement` stub — the gap is named so it can't be
-# mistaken for the finished mechanism.
-AGENT_REGISTRY: dict[str, str] = {
-    "research-agent-01": "research_agent",
-}
+import dlp.detectors as dlp
+import risk.scorer as risk
+import threat_intel.feed as threat_intel
+from identity.tokens import TokenInvalidError, public_key_from_b64, verify_token
+from policy.compiler import compile_bundle
+from policy.engine import EXECUTABLE_DECISIONS, Decision, evaluate
 
-# (role, tool) -> (Decision, policy_id). Anything not in this table is default-deny (invariant
-# §3.2, no-implicit-allow) — there is no fallback branch that grants access.
-HARDCODED_RULES: dict[tuple[str, str], tuple[Decision, str]] = {
-    ("research_agent", "http.get"): (Decision.ALLOW, "R-M1-001"),
-    ("research_agent", "http.post"): (Decision.DENY, "R-M1-002"),
+IDENTITY_ISSUER_URL = os.environ.get("IDENTITY_ISSUER_URL", "http://identity:8082")
+POLICY_BUNDLE_PATH = os.environ.get("POLICY_BUNDLE_PATH", "policy/bundles/default.yaml")
+
+ACTION_MAP = {
+    "http.get": "read",
+    "http.post": "write",
+    "db.query": "read",
+    "file.read": "read",
+    "email.send": "write",
 }
 
 PIPELINE_STAGES = (
@@ -42,6 +40,17 @@ PIPELINE_STAGES = (
     "log",
 )
 
+# WHY loaded and compiled once at import time, not per-request: policy/compiler.py's job is to
+# catch a broken bundle before it can ever be enforced — running it once at process start (and
+# crashing loudly if it fails) is what "never load unverified policy" means in code
+# (AGENTFW_Architecture_v1.md §16). A bad bundle should be a deploy-time failure, not a runtime one.
+BUNDLE, BUNDLE_WARNINGS = compile_bundle(POLICY_BUNDLE_PATH)
+
+# --- in-memory session state (per-process — see risk/scorer.py's module docstring for the same
+# trade-off applied here) ---
+_SESSION_TAINT: dict[str, bool] = {}
+_ISSUER_PUBLIC_KEY = None  # lazily fetched; type is Ed25519PublicKey once set
+
 
 @dataclass
 class PipelineResult:
@@ -49,59 +58,199 @@ class PipelineResult:
     reason: str
     policy_id: str
     role: str | None
+    agent_key: str
+    session_taint: str
+    data_classification: str
+    risk_score: int
+    risk_factors: list[dict[str, Any]] = field(default_factory=list)
     latency_ms: dict[str, float] = field(default_factory=dict)
 
 
-def run_pipeline(agent_id: str, tool: str, *, header_agent_id: str | None) -> PipelineResult:
-    """Run the M1 pipeline stand-in and return a verdict. Never raises for a bad/unknown caller or
-    tool — those are DENY outcomes, not exceptions; exceptions are reserved for genuine faults."""
+def run_pipeline(
+    *,
+    token: str | None,
+    peer_ip: str | None,
+    session_id: str,
+    tool: str,
+    arguments: dict[str, Any],
+) -> PipelineResult:
+    """Run the full 8-stage pipeline (stage 8's actual write happens in pep/proxy.py; this
+    function returns everything the event needs). Never raises for a bad caller, bad tool, or bad
+    request shape — those are DENY outcomes; exceptions stay reserved for genuine faults (e.g. the
+    issuer being unreachable, which also resolves to DENY, just via a different reason string)."""
     latency: dict[str, float] = {}
 
     # --- Stage 1: identity verification ---
     t0 = time.perf_counter()
-    role = AGENT_REGISTRY.get(agent_id) if header_agent_id == agent_id else None
+    role, agent_key, id_reason = _verify_identity(token, peer_ip)
     latency["identity"] = _elapsed_ms(t0)
     if role is None:
-        return PipelineResult(
-            Decision.DENY,
-            "identity_verification_failed",
-            "IDENTITY_DENY",
-            None,
-            _finalize(latency),
-        )
+        return _deny_early(id_reason, "IDENTITY_DENY", agent_key, latency)
 
-    # --- Stage 2: request normalization (no-op until M2 — pep/normalize.py) ---
+    # --- Stage 2: request normalization (no-op — pep/normalize.py is not M2 scope; see
+    # AGENTFW_CONTEXT.md §4) ---
     t0 = time.perf_counter()
+    fqdn, resource = extract_target(tool, arguments)
     latency["normalize"] = _elapsed_ms(t0)
 
     # --- Stage 3: policy evaluation ---
     t0 = time.perf_counter()
-    decision, policy_id = HARDCODED_RULES.get((role, tool), (Decision.DENY, "DEFAULT_DENY"))
-    if decision == Decision.ALLOW:
-        reason = "matched_explicit_allow"
-    elif policy_id == "DEFAULT_DENY":
-        reason = "no_matching_rule"
-    else:
-        reason = "matched_explicit_deny"
+    session_taint = "tainted" if _SESSION_TAINT.get(session_id, False) else "clean"
+    policy_result = evaluate(
+        BUNDLE, role=role, tool=tool, fqdn=fqdn, resource=resource, session_taint=session_taint
+    )
     latency["policy"] = _elapsed_ms(t0)
 
-    # --- Stages 4-6: threat intel / DLP / risk (no-op until M2) ---
-    # WHY these stay no-ops rather than being skipped entirely: every event must carry a latency
-    # figure for every pipeline stage (events/schema.json `latency_ms`), so the shape of the
-    # output is already what M2 will fill in — only the values change from 0.0 to real work.
-    for stage in ("threat_intel", "dlp", "risk"):
-        latency[stage] = 0.0
-
-    # --- Stage 7: decision ---
-    # final = min(policy_verdict, risk_verdict) — risk is a no-op ceiling of ALLOW in M1, so the
-    # policy verdict always wins here. The min() is written explicitly, not assumed, so the
-    # monotonicity invariant (§3.1) is visibly upheld rather than incidentally true.
+    # --- Stage 4: threat intel ---
     t0 = time.perf_counter()
-    risk_verdict = Decision.ALLOW  # no risk scoring yet — never narrows in M1
-    decision = min(decision, risk_verdict)
+    ti_hit = threat_intel.is_known_bad(fqdn)
+    latency["threat_intel"] = _elapsed_ms(t0)
+
+    # --- Stage 5: DLP / data classification ---
+    t0 = time.perf_counter()
+    data_class = policy_result.max_data_class or "public"
+    dlp_decision, dlp_reason = Decision.ALLOW, "dlp_pass"
+    if policy_result.decision == Decision.ALLOW and (policy_result.inspect or _is_external(fqdn)):
+        # WHY "url" is excluded from the scan: it's the destination, already governed separately
+        # by policy (stage 3) — and URLs are structurally diverse enough (scheme, dots, slashes,
+        # a mix of cases) to trip a generic entropy threshold on their own, which would flag
+        # nearly every http.get as a false positive. The actual exfiltration risk is in what's
+        # being SENT (a POST/email body, a query filter), not the address it's sent to.
+        blob = " ".join(str(v) for k, v in arguments.items() if k != "url")
+        findings = dlp.scan(blob)
+        verdict = dlp.outcome(findings)
+        dlp_decision = {
+            "PASS": Decision.ALLOW,
+            "REDACT": Decision.ALLOW_REDACTED,
+            "BLOCK": Decision.DENY,
+        }[verdict]
+        dlp_reason = {"PASS": "dlp_pass", "REDACT": "dlp_redact", "BLOCK": "dlp_block"}[verdict]
+    latency["dlp"] = _elapsed_ms(t0)
+
+    # --- Stage 6: risk + behavior scoring ---
+    t0 = time.perf_counter()
+    risk_result = risk.score(
+        agent_id=agent_key,
+        role=role,
+        tool=tool,
+        destination_key=fqdn or resource,
+        action=ACTION_MAP.get(tool, "unknown"),
+        data_class=data_class,
+        session_taint=session_taint,
+        threat_intel_hit=ti_hit,
+    )
+    latency["risk"] = _elapsed_ms(t0)
+
+    # --- Stage 7: decision — final = min(policy, dlp, risk) on the lattice ---
+    # WHY min() over a list of (decision, reason) tuples: this reports *which* stage produced the
+    # narrowest verdict, not just the verdict itself — an operator reading `reason` in an event
+    # should be able to tell taint_ceiling from dlp_block from a HIGH risk band without decoding
+    # four separate fields.
+    t0 = time.perf_counter()
+    candidates = [
+        (policy_result.decision, policy_result.reason),
+        (dlp_decision, dlp_reason),
+        (risk_result.decision_ceiling, f"risk_band_{risk_result.band.lower()}"),
+    ]
+    final_decision, final_reason = min(candidates, key=lambda c: c[0])
     latency["decision"] = _elapsed_ms(t0)
 
-    return PipelineResult(decision, reason, policy_id, role, _finalize(latency))
+    if tool == "http.get" and final_decision in EXECUTABLE_DECISIONS:
+        # WHY unconditional, not domain-specific: fetching ANY external content is how untrusted
+        # instructions enter (AGENTFW_CONTEXT.md §10) — an allowlisted domain is still someone
+        # else's content. Taint is monotonic (invariant §3.5): only ever set True, never cleared.
+        _SESSION_TAINT[session_id] = True
+
+    risk.record_outcome(
+        agent_id=agent_key,
+        role=role,
+        tool=tool,
+        destination_key=fqdn or resource,
+        decision=final_decision,
+    )
+
+    return PipelineResult(
+        decision=final_decision,
+        reason=final_reason,
+        policy_id=policy_result.policy_id,
+        role=role,
+        agent_key=agent_key,
+        session_taint=session_taint,
+        data_classification=data_class,
+        risk_score=risk_result.score,
+        risk_factors=[
+            {"code": f.code, "points": f.points, "human_reason": f.human_reason}
+            for f in risk_result.factors
+        ],
+        latency_ms=_finalize(latency),
+    )
+
+
+def _verify_identity(token: str | None, peer_ip: str | None) -> tuple[str | None, str, str]:
+    """Returns (role, agent_key, reason). role is None on any failure; agent_key is always a
+    string (the peer IP, if identity couldn't be established) so risk/event logging always has
+    *something* to key on — an unauthenticated caller still gets tracked, just not authorized."""
+    fallback_key = peer_ip or "unknown"
+    if not token:
+        return None, fallback_key, "identity_verification_failed: no token presented"
+    try:
+        public_key = _get_issuer_public_key()
+        claims = verify_token(token, public_key)
+    except TokenInvalidError as exc:
+        return None, fallback_key, f"identity_verification_failed: {exc}"
+    except httpx.HTTPError:
+        return None, fallback_key, "identity_verification_failed: issuer unreachable"
+
+    # --- container binding: the connection presenting this token must be the same one the
+    # issuer attested (AGENTFW_CONTEXT.md §2) — a stolen token replayed from elsewhere fails here
+    # even though its signature is perfectly valid.
+    if peer_ip is None or claims.get("attested_ip") != peer_ip:
+        return None, fallback_key, "identity_verification_failed: container binding mismatch"
+
+    return claims["role"], claims.get("container_id", fallback_key)[:12], "ok"
+
+
+def _get_issuer_public_key():
+    global _ISSUER_PUBLIC_KEY
+    if _ISSUER_PUBLIC_KEY is None:
+        resp = httpx.get(f"{IDENTITY_ISSUER_URL}/public-key", timeout=5.0)
+        resp.raise_for_status()
+        _ISSUER_PUBLIC_KEY = public_key_from_b64(resp.json()["public_key"])
+    return _ISSUER_PUBLIC_KEY
+
+
+def extract_target(tool: str, arguments: dict[str, Any]) -> tuple[str | None, str | None]:
+    if tool.startswith("http."):
+        parsed = urlparse(arguments.get("url", ""))
+        return parsed.hostname, (parsed.path or None)
+    if tool == "db.query":
+        return None, arguments.get("table")
+    if tool == "file.read":
+        return None, arguments.get("path")
+    if tool == "email.send":
+        return None, arguments.get("to")
+    return None, None
+
+
+def _is_external(fqdn: str | None) -> bool:
+    return fqdn is not None and not fqdn.endswith(".internal")
+
+
+def _deny_early(
+    reason: str, policy_id: str, agent_key: str, latency: dict[str, float]
+) -> PipelineResult:
+    return PipelineResult(
+        decision=Decision.DENY,
+        reason=reason,
+        policy_id=policy_id,
+        role=None,
+        agent_key=agent_key,
+        session_taint="clean",
+        data_classification="internal",
+        risk_score=0,
+        risk_factors=[],
+        latency_ms=_finalize(latency),
+    )
 
 
 def _elapsed_ms(t0: float) -> float:

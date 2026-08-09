@@ -20,7 +20,7 @@ A stranger clones the repo and runs:
 git clone <repo> && cd agentfw
 cp .env.example .env          # works with NO API key, using the mock LLM
 docker compose up -d
-python attacks/run_all.py     # 7 attacks, 7 blocks
+python attacks/run_all.py     # 8 attacks, 8 blocks
 python evals/score.py         # real measured numbers
 ```
 
@@ -136,14 +136,15 @@ agentfw/
 ├── agent/{loop.py,tools.py,providers.py,prompts/,main.py}   # main.py: container entrypoint, added M1
 ├── pep/{proxy.py,pipeline.py,normalize.py}
 ├── policy/{engine.py,compiler.py,bundles/default.yaml}
-├── identity/issuer.py
+├── identity/{issuer.py,tokens.py}   # tokens.py split out M2: pure Ed25519 mint/verify, no
+│                                      # FastAPI/Docker-socket deps, so pep can import it standalone
 ├── risk/scorer.py
 ├── threat_intel/{feed.py,lists/}
 ├── dlp/detectors.py
 ├── events/{schema.json,store.py,app.py}   # app.py: thin FastAPI wrapper, added M1 so the
 │                                            # `eventstore` container has something to run
 ├── dashboard/app.py
-├── attacks/{a1..a7}.py + run_all.py
+├── attacks/{a1..a8}.py + run_all.py   # a8 added M2 alongside pep/bypass_proxy.py
 ├── evals/{corpus_attack.jsonl,corpus_benign.jsonl,score.py}
 └── tests/{policy/*.yaml,test_invariants.py}
 ```
@@ -229,8 +230,8 @@ follows from the other, so both get demonstrated separately.
 **M2 — The engine.** YAML policy bundle + compiler (conflict/shadow detection) + engine; identity issuer with Ed25519 short-lived tokens; risk scorer with factor vectors; taint tracking; DLP detectors; policy test suite; the 6 invariant tests; GitHub Actions CI.
 *Done when:* CI is green and a deliberately broken policy PR fails the build.
 
-**M3 — The proof.** 7 attack scripts (A1 unauthorized API, A2 exfiltration, A3 restricted DB, A4 lateral movement, A5 malicious tool, A6 **indirect prompt injection**, A7 privilege escalation); eval corpora (≥60 attack, ≥60 benign cases); scorer reporting block rate, false-positive rate, and latency percentiles; Streamlit dashboard.
-*Done when:* `attacks/run_all.py` prints 7 blocks with reasons, and `evals/score.py` prints measured numbers.
+**M3 — The proof.** 8 attack scripts (A1 unauthorized API, A2 exfiltration, A3 restricted DB, A4 lateral movement, A5 malicious tool, A6 **indirect prompt injection**, A7 privilege escalation, A8 **HTTP_PROXY bypass attempt** — resolved M2, exercises `pep/bypass_proxy.py`); eval corpora (≥60 attack, ≥60 benign cases); scorer reporting block rate, false-positive rate, and latency percentiles; Streamlit dashboard.
+*Done when:* `attacks/run_all.py` prints 8 blocks with reasons, and `evals/score.py` prints measured numbers.
 
 **M4 — The packaging.** README with diagram and demo GIF; `docs/demo.md` 5-minute walkthrough; measured p50/p95/p99 PEP latency; threat model doc; resume bullets filled with real numbers.
 *Done when:* a stranger can run the acceptance test in §0 successfully.
