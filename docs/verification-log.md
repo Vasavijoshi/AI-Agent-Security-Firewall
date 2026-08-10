@@ -221,6 +221,21 @@ Named explicitly, not left implicit — a missing entry here is not the same cla
 - **Trust-on-first-use pinning itself, end to end** — "second attestation with a different digest
   is refused" is verified by `tests/test_identity_issuer.py` against a scratch SQLite file, not yet
   against a real rebuilt image and a real second container.
+- **M3's A4 (real multi-agent lateral movement)** — `attacks/a4.py` attempts a real `/attest` +
+  `/v1/tool-call` round trip against the live `identity`/`pep` containers and reports `UNVERIFIED`
+  when it can't reach them, per its own module docstring; this has not yet been run against a real
+  deployment. Recommended re-test: `docker compose up -d` then
+  `docker compose exec agent python -m attacks.a4` — expect `verification_status:
+  REAL_DOCKER_VERIFIED` and `decision: DENY` / `policy_id: DEFAULT_DENY_EAST_WEST`.
+- **M3's A9 (raw `:8081` bypass listener)** — `attacks/a9.py` likewise reports `UNVERIFIED` when it
+  can't reach the live listener; not yet run against a real deployment. Recommended re-test:
+  `docker compose exec agent python -m attacks.a9`, then independently confirm attribution with
+  `docker compose logs pep | Select-String "BYPASS_ATTEMPTED"` — this is the same
+  not-yet-independently-re-verified gap Verification 1 already named for the post-fix logging path.
+- **The dashboard against a live eventstore with real attack/agent traffic in it** — verified
+  locally in this session against a manually seeded local `events/app.py` instance (real event
+  schema, real FastAPI routes) with a real browser render confirming charts/tables/detail view all
+  populate correctly, but not yet against the actual `docker compose up -d` deployment.
 - **Quarantine persistence across a real PEP restart** (pre-M3 round 3) — verified by
   `tests/test_quarantine.py` against a simulated restart (clearing in-memory state), not yet
   against an actual `docker compose restart pep`.
