@@ -123,7 +123,8 @@ def test_run_evaluation_actually_uses_the_warmed_up_baseline():
 
     report = run_evaluation()
     assert report["false_positive_rate"] < 1.0  # not every benign call blocked
-    assert report["friction_rate"] < 1.0  # not literally 100% friction either
+    # not literally every benign call held/throttled either
+    assert report["approval_rate"] + report["throttle_rate"] < 1.0
 
 
 def test_replay_corpus_returns_one_decision_and_latency_per_record(tmp_path):

@@ -62,7 +62,8 @@ not rounded away — see the explanations under the table.
 | Benign corpus size | 65 |
 | Block rate (attack corpus) | 98.5% (65/66) |
 | False-positive rate (benign corpus) | 0.0% (0/65) |
-| Friction rate (benign corpus, RATE_LIMIT/REQUIRE_APPROVAL) | 58.5% (38/65) |
+| Approval rate (benign corpus, REQUIRE_APPROVAL — genuinely stopped) | 6.2% (4/65) |
+| Throttle rate (benign corpus, RATE_LIMIT — **designed-not-implemented, executes normally**) | 52.3% (34/65) |
 | `RATE_ANOMALY` firing rate, attack corpus | 69.7% (46/66) |
 | `RATE_ANOMALY` firing rate, benign corpus | 4.6% (3/65) |
 | Pipeline latency, p50 | 0.251 ms |
@@ -118,14 +119,29 @@ the same factor — an honest cost of that polling cadence, not a rig artifact).
 similar rates on both corpora would have carried no information; this one doesn't.
 
 **Final false-positive rate is 0.0%** (was 3.1%, entirely explained by the baseline-coverage bug
-above — no threshold was touched to reach this). **Final friction rate is 58.5%** (was 96.9% →
-90.8% → 58.5% across the two fixes) — still the majority of benign traffic, which is a real,
-unmassaged cost of `RATE_LIMIT`/`REQUIRE_APPROVAL` firing on cold-start destination novelty
-(`DEST_UNKNOWN_TO_ORG`/`DEST_NEVER_SEEN_BY_AGENT`) against a corpus deliberately built to cover many
-different destinations/tables for category coverage, not the repeated-narrow traffic a long-running
-warmed-up deployment would mostly see. No decision-lattice threshold or band boundary was changed
-anywhere in this process — every number above came from fixing what the harness measured, not from
-changing what the firewall does.
+above — no threshold was touched to reach this).
+
+**"Friction rate" as a single number is retired, not just improved — it was hiding two different
+things behind one average.** The original 58.5% figure (96.9% → 90.8% → 58.5% across the two fixes
+above) summed `RATE_LIMIT` and `REQUIRE_APPROVAL` together. Per the
+[decision-lattice status table](#decision-lattice--implementation-status) below, those are not the
+same event: `REQUIRE_APPROVAL` genuinely stops the call — no approval workflow exists yet, so it's
+currently a dead end — while `RATE_LIMIT` is designed-not-implemented and **executes the call
+exactly like `ALLOW`**, just narrowed and logged. A metric that averages "a human was stopped" with
+"logged verbosely and proceeded anyway" can't inform any decision. Split into two
+(`evals/score.py`'s `approval_rate()`/`throttle_rate()`):
+
+- **Approval rate: 6.2%** (4/65) — the real friction number. This is what a human actually has to
+  intervene on, and it's a reasonable rate, not the alarming 58.5%/90.8%/96.9% the aggregate showed.
+- **Throttle rate: 52.3%** (34/65) — real, unmassaged, and labeled for what it is: cold-start
+  destination novelty (`DEST_UNKNOWN_TO_ORG`/`DEST_NEVER_SEEN_BY_AGENT`) narrowing `ALLOW` to
+  `RATE_LIMIT` on a corpus deliberately built to cover many different destinations/tables for
+  category coverage — logged and visible, but the call still goes through. Not folded into approval
+  rate, and not hidden.
+
+No decision-lattice threshold or band boundary was changed anywhere in this process — every number
+above came from fixing what the harness measured and how it was reported, not from changing what
+the firewall does.
 
 ## How it works
 

@@ -1,5 +1,5 @@
 """Scores evals/corpus_attack.jsonl and evals/corpus_benign.jsonl against the real pipeline: block
-rate, false-positive rate, friction rate, and measured latency percentiles.
+rate, false-positive rate, approval/throttle rates, and measured latency percentiles.
 
 Verdict taxonomy (pre-M3 ruling):
 
@@ -9,10 +9,21 @@ Verdict taxonomy (pre-M3 ruling):
 
     Block rate            = blocked / attack corpus
     False-positive rate   = blocked / benign corpus
-    Friction rate          = benign calls landing on RATE_LIMIT or REQUIRE_APPROVAL, over the
-                              benign corpus — NOT a false positive (the call wasn't blocked), but
-                              not free either. Reported on its own, never folded into either the
-                              false-positive or the "clean permit" bucket.
+
+WHY there is no single "friction rate" here (M3 correction, after review): policy.engine's own
+FRICTION_DECISIONS groups RATE_LIMIT and REQUIRE_APPROVAL together, but they are not the same kind
+of event and reporting them as one number hides that. Per README.md's own "Decision lattice —
+implementation status" table, REQUIRE_APPROVAL genuinely stops the call (no approval workflow
+exists yet, so it's currently a dead end — the call never executes) while RATE_LIMIT is
+designed-not-implemented and executes the call exactly like ALLOW, just narrowing the decision
+value and logging it. A metric that averages "a human must intervene" with "logged verbosely and
+proceeded anyway" cannot inform any decision — separating them is what makes the number actionable:
+
+    Approval rate  = benign calls landing on REQUIRE_APPROVAL, over the benign corpus. The real
+                      friction number: something a human is actually stopped by.
+    Throttle rate  = benign calls landing on RATE_LIMIT, over the benign corpus. Reported
+                      separately and labeled designed-not-implemented — visible, never conflated
+                      with work that was actually stopped.
 
 Corpus record schema (evals/corpus_attack.jsonl, evals/corpus_benign.jsonl) — designed for M3,
 nothing pre-existing to match, since no evaluation input schema existed in this repo before this
@@ -56,7 +67,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from policy.engine import BLOCKED_DECISIONS, FRICTION_DECISIONS, Decision
+from policy.engine import BLOCKED_DECISIONS, Decision
 from risk.scorer import RiskScorer
 
 DEFAULT_ATTACK_CORPUS = "evals/corpus_attack.jsonl"
@@ -137,14 +148,28 @@ def false_positive_rate(benign_corpus_decisions: list[Decision]) -> float:
     return _blocked_fraction(benign_corpus_decisions)
 
 
-def friction_rate(benign_corpus_decisions: list[Decision]) -> float:
-    """Friction rate = benign calls landing on RATE_LIMIT or REQUIRE_APPROVAL, over the benign
-    corpus. Never added into false_positive_rate()'s numerator — a held-for-approval benign call
-    is friction the firewall imposes, not a misclassification of it as an attack."""
+def approval_rate(benign_corpus_decisions: list[Decision]) -> float:
+    """Approval rate = benign calls landing on REQUIRE_APPROVAL, over the benign corpus. The real
+    friction number: REQUIRE_APPROVAL is not executed (no approval workflow exists yet — see
+    README.md's decision-lattice status table), so a benign call landing here is genuinely stopped,
+    not logged-and-allowed. Never added into false_positive_rate()'s numerator — REQUIRE_APPROVAL
+    is a distinct lattice point from DENY/QUARANTINE, not a misclassification as an attack."""
     if not benign_corpus_decisions:
         return 0.0
-    friction = sum(1 for d in benign_corpus_decisions if d in FRICTION_DECISIONS)
-    return friction / len(benign_corpus_decisions)
+    stopped = sum(1 for d in benign_corpus_decisions if d == Decision.REQUIRE_APPROVAL)
+    return stopped / len(benign_corpus_decisions)
+
+
+def throttle_rate(benign_corpus_decisions: list[Decision]) -> float:
+    """Throttle rate = benign calls landing on RATE_LIMIT, over the benign corpus. RATE_LIMIT is
+    designed-not-implemented (policy/engine.py's own EXECUTABLE_DECISIONS includes it): the call
+    executes exactly like ALLOW, just narrowed and logged. Reported on its own, deliberately not
+    folded into approval_rate() or false_positive_rate() — conflating "executed normally" with
+    "a human was stopped" is exactly the aggregate this split replaces."""
+    if not benign_corpus_decisions:
+        return 0.0
+    throttled = sum(1 for d in benign_corpus_decisions if d == Decision.RATE_LIMIT)
+    return throttled / len(benign_corpus_decisions)
 
 
 def percentile(values: list[float], pct: float) -> float:
@@ -230,7 +255,8 @@ def run_evaluation(
         "benign_corpus_size": len(benign_records),
         "block_rate": block_rate(attack_outcome.decisions),
         "false_positive_rate": false_positive_rate(benign_outcome.decisions),
-        "friction_rate": friction_rate(benign_outcome.decisions),
+        "approval_rate": approval_rate(benign_outcome.decisions),
+        "throttle_rate": throttle_rate(benign_outcome.decisions),
         "p50_latency_ms": percentile(all_latencies, 50),
         "p95_latency_ms": percentile(all_latencies, 95),
         "p99_latency_ms": percentile(all_latencies, 99),
@@ -251,7 +277,10 @@ if __name__ == "__main__":
     print(f"benign corpus size:    {report['benign_corpus_size']}")
     print(f"block rate:            {report['block_rate']:.1%}")
     print(f"false positive rate:   {report['false_positive_rate']:.1%}")
-    print(f"friction rate:         {report['friction_rate']:.1%}")
+    print(f"approval rate:         {report['approval_rate']:.1%}")
+    print("  (REQUIRE_APPROVAL - genuinely stopped, no approval workflow exists yet)")
+    print(f"throttle rate:         {report['throttle_rate']:.1%}")
+    print("  (RATE_LIMIT - designed-not-implemented, executes the call normally)")
     print(f"p50 latency:           {report['p50_latency_ms']:.3f} ms")
     print(f"p95 latency:           {report['p95_latency_ms']:.3f} ms")
     print(f"p99 latency:           {report['p99_latency_ms']:.3f} ms")

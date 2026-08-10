@@ -362,10 +362,22 @@ from harness speed, not traffic shape. Fixed by giving the rate-window logic an 
 (`risk.scorer.set_clock()`, production unchanged) and adding a real `offset_seconds` timestamp to
 the corpus schema with realistic per-role spacing — attack bursts tracked per compromised *service*,
 not per narrative category, after an initial version diluted every individual agent's own rate
-below the threshold by interleaving roles within a category. Final numbers: 0.0% false-positive,
+below the threshold by interleaving roles within a category. Interim numbers: 0.0% false-positive,
 58.5% friction, `RATE_ANOMALY` firing on 69.7% of attack traffic vs. 4.6% of benign — a signal that
 actually separates the two, which is what was being tested for. No decision threshold was changed
 to get here.
+
+**M3 correction, round 2 (same review):** that 58.5% "friction rate" was itself retired, not just
+measured more carefully — it summed `RATE_LIMIT` and `REQUIRE_APPROVAL` into one number, but they
+are not the same event. `REQUIRE_APPROVAL` genuinely stops the call (no approval workflow exists
+yet — README's decision-lattice status table). `RATE_LIMIT` is designed-not-implemented and
+executes the call exactly like `ALLOW`, just narrowed and logged. Averaging "a human was stopped"
+with "logged and proceeded anyway" produces a number that can't inform any decision. Split into
+`evals/score.py`'s `approval_rate()` (REQUIRE_APPROVAL only) and `throttle_rate()` (RATE_LIMIT
+only, explicitly labeled designed-not-implemented in every place it's printed). Final numbers:
+approval rate 6.2% (the real friction figure — a human actually intervenes on 4 of 65 benign
+calls), throttle rate 52.3% (real, unmassaged, logged-and-visible-but-executes-anyway). No
+threshold changed here either.
 
 **M4 — The packaging.** README with diagram and demo GIF; `docs/demo.md` 5-minute walkthrough; measured p50/p95/p99 PEP latency; threat model doc; resume bullets filled with real numbers.
 *Done when:* a stranger can run the acceptance test in §0 successfully.
