@@ -7,9 +7,9 @@ the security property that output does or doesn't establish. Where a run found a
 the entry says so, how it was diagnosed, and what changed as a result — this file is a record of
 what was tested, not a claim that everything works.
 
-Three runs have happened so far. All three found a real problem. That's the point of writing this
-down: two "it's fine, trust me" claims from earlier sessions turned out to be wrong the moment
-someone actually ran the command.
+Four runs have happened so far. Three found a real problem; the fourth confirmed the project's
+central claim holds. That's the point of writing this down either way: a passing result recorded
+here is worth more than an assumed one, and a failing result gets fixed instead of argued about.
 
 ---
 
@@ -177,19 +177,49 @@ on the host) — the compose file itself has been re-verified correct as of this
 
 ---
 
+## Verification 4 — the original M1 non-bypassability proof
+
+**What was being checked:** the single property the entire project's design argument rests on —
+`agent-net` being `internal: true` means the agent container has no route to the internet at all,
+not even to a host that a policy would otherwise allow. Two commands were run to make that
+distinction concrete: one target with no allow rule, and one target that *would* be allowlisted if
+the request ever reached the PEP's policy layer.
+
+**Commands run, from inside the agent container:**
+```
+docker compose exec agent curl -sS --max-time 5 https://example.com
+docker compose exec agent curl -sS --max-time 5 https://api.trusted-news.com
+```
+
+**Result:** both failed. (The exact curl stderr text wasn't captured in this run — only the pass/
+fail outcome was reported back — so it isn't reproduced here rather than guessed at. A re-run per
+Verification 1's template, with `-sS` output kept, would fill that in.)
+
+**What this established:** `api.trusted-news.com` failing is the point, not a side note. If the
+network layer only blocked *unlisted* hosts, that would prove nothing about `agent-net` itself —
+it could just as easily mean some other component was doing the blocking. Both an allowlisted and
+a non-allowlisted host failing identically, from the agent's own network namespace, shows the
+block is indiscriminate: `agent-net` doesn't know or care what policy would eventually say about
+either destination, because it has no route to either one. That's what makes allowlisting provably
+the PEP's job and nobody else's — the network layer can't do it selectively even if it wanted to.
+
+**Re-verified after any fix?** N/A — nothing failed here; this confirms a property that was already
+believed true but had never been run and reported back until now.
+
+---
+
 ## Not yet verified via Docker
 
 Named explicitly, not left implicit — a missing entry here is not the same claim as a passing one:
 
-- **The original M1 non-bypassability proof** — `docker compose exec agent curl https://example.com`
-  must fail at the network layer. This is the single property the entire project's design argument
-  rests on, and it has not been reported back with real output in any session so far.
-- **Identity's new dual-homing** (pre-M3 round 4) — `identity` moved from `agent-net`-only to
-  `[agent-net, egress-net]` so it can reach `eventstore` for digest-pin persistence. Whether
-  `docker compose up` actually builds and starts cleanly with this topology change has not been
-  confirmed.
+- **Identity's reverted network topology** (pre-M3 round 5, correcting round 4) — `identity` moved
+  back to `agent-net`-only, with digest pins now persisted to a local SQLite file
+  (`identity/store.py`) on a named `identity-data` volume instead of the eventstore. Whether
+  `docker compose up` builds and starts cleanly with this topology change, and whether
+  `docker compose exec identity python -m identity.admin_cli list-pins` / `clear-pin <service>`
+  actually work against the mounted volume, has not been confirmed.
 - **Trust-on-first-use pinning itself, end to end** — "second attestation with a different digest
-  is refused" is verified by `tests/test_identity_issuer.py` against a fake pin store, not yet
+  is refused" is verified by `tests/test_identity_issuer.py` against a scratch SQLite file, not yet
   against a real rebuilt image and a real second container.
 - **Quarantine persistence across a real PEP restart** (pre-M3 round 3) — verified by
   `tests/test_quarantine.py` against a simulated restart (clearing in-memory state), not yet

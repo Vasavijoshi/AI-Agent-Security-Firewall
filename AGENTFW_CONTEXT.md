@@ -141,8 +141,10 @@ agentfw/
 │    # eventstore-backed quarantine client (state + its admin surface live on events/app.py now —
 │    # egress-net has no route from agent-net at all, not a bind-address trick on pep itself).
 ├── policy/{engine.py,compiler.py,bundles/default.yaml}
-├── identity/{issuer.py,tokens.py}   # tokens.py split out M2: pure Ed25519 mint/verify, no
-│                                      # FastAPI/Docker-socket deps, so pep can import it standalone
+├── identity/{issuer.py,tokens.py,store.py,admin_cli.py}   # tokens.py split out M2: pure Ed25519
+│    # mint/verify, no FastAPI/Docker-socket deps, so pep can import it standalone. store.py +
+│    # admin_cli.py: pre-M3 round 5, identity's own local SQLite digest-pin store + its CLI-only
+│    # admin surface (no HTTP route — see docker networking §5's round-5 entry)
 ├── risk/scorer.py
 ├── threat_intel/{feed.py,lists/}
 ├── dlp/detectors.py
@@ -177,12 +179,24 @@ This is the non-bypassability proof. `docker compose exec agent curl https://exa
 `agent`, `finance-agent`, `support-agent` — all on `agent-net` only, all with the same
 non-bypassability property.*
 
-*Pre-M3 round-4 ruling: `pep` is no longer the only container on both networks — `identity` is
-now dual-homed too, so its trust-on-first-use digest pins (see §2) can be checked against a value
-that survives its own restart, durably persisted on `eventstore`. This doesn't reopen the
-non-bypassability property: that invariant is specifically about the agent having no route except
-through the PEP, and identity never proxies agent traffic or gives the agent anywhere new to go —
-it's a control-plane component reaching a control-plane dependency, not a second way out.)*
+*Pre-M3 round-4 ruling (corrected in round 5, below): briefly put `identity` on both networks too,
+so its trust-on-first-use digest pins could be persisted durably on `eventstore`.*
+
+*Pre-M3 round-5 ruling: reverted. A digest pin is identity's own state, not a shared security
+event — routing it through the eventstore was what forced identity onto `egress-net` in the first
+place, making it a second dual-homed container and a second potential bridge from `agent-net` to
+the internet, regardless of whether identity's own code ever intended to use that route. Identity
+mints workload identity; a compromise of it is a high-value target, and giving it egress turns that
+compromise into an exfiltration path. Digest pins now persist to identity's own local SQLite file
+(`identity/store.py`, on a named `identity-data` volume) instead — `identity` is agent-net-only
+again, and `pep` is once more the only dual-homed container. Pin-clearing (the one admin operation
+this needs) is a CLI command run via `docker compose exec identity python -m identity.admin_cli`,
+not an HTTP endpoint: once identity lives on `agent-net`, nothing bound to a port on it can be
+"unreachable from agent-net" as a topology fact, since agent-net members can always reach each
+other directly — and a loopback-bound listener would face the same test-methodology trap that
+already produced one false "reachable" finding for `pep`'s old admin port (the agent's
+`HTTP_PROXY` silently redirects a plain curl through the bypass-catch listener before it ever
+reaches the real target). A CLI with no listening socket at all has no such trap.)*
 
 ---
 

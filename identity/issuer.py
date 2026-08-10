@@ -26,13 +26,23 @@ a shared secret.
 # AGENTFW_CONTEXT.md §1's acceptance-test configuration — means digest verification was never
 # actually protecting anything unless someone remembered to turn it on. TOFU is unconditional:
 # the first successful attestation for a service pins whatever digest it observed (see
-# events/store.py's digest_pin_get_or_set()), and every later attestation for that service must
-# match or is refused. Named trade-off: the trust window is exactly one attestation, at first
-# boot — an attacker who wins the race to attest first, before the real container does, gets
-# pinned instead of the real image. EXPECTED_DIGEST_* (still optional, still just for pre-seeding)
-# closes that window entirely for anyone willing to configure it: set, it becomes the value pinned
-# on that first call instead of blindly trusting whatever shows up, so a mismatch is caught even
-# on attestation #1.
+# identity/store.py's get_or_set()), and every later attestation for that service must match or is
+# refused. Named trade-off: the trust window is exactly one attestation, at first boot — an
+# attacker who wins the race to attest first, before the real container does, gets pinned instead
+# of the real image. EXPECTED_DIGEST_* (still optional, still just for pre-seeding) closes that
+# window entirely for anyone willing to configure it: set, it becomes the value pinned on that
+# first call instead of blindly trusting whatever shows up, so a mismatch is caught even on
+# attestation #1.
+#
+# WHY the pin lives in identity's own local SQLite file, not the eventstore (pre-M3 ruling,
+# round 5, correcting round 4): a digest pin is identity's own state, not a shared security event —
+# routing it through the eventstore forced identity onto egress-net to reach it, making it a second
+# dual-homed container and a second potential bridge from agent-net to the internet. Identity mints
+# workload identity; a compromise of it is a high-value target, and giving it egress turns that
+# compromise into an exfiltration path regardless of what identity's own code currently intends to
+# do with the route. Local storage (identity/store.py, on its own named volume) removes the need
+# for the route entirely — identity is agent-net-only again, and `pep` is once more the only
+# dual-homed container (docker-compose.yml, AGENTFW_CONTEXT.md §5).
 """
 
 from __future__ import annotations
@@ -40,6 +50,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -48,17 +59,16 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 
+import identity.store as pin_store
 from identity.tokens import generate_keypair, mint_token, public_key_to_b64
 
 DOCKER_SOCKET = os.environ.get("DOCKER_SOCKET", "/var/run/docker.sock")
-EVENTSTORE_URL = os.environ.get("EVENTSTORE_URL", "http://eventstore:8090")
+IDENTITY_DB_PATH = os.environ.get("IDENTITY_DB_PATH", "/data/identity.db")
 
-# WHY stdout, not the eventstore, for attestation *denials* specifically: unchanged from before —
-# see pep/bypass_proxy.py's M1-gap-#3 precedent, `docker compose logs identity` is the loud,
-# attributable trail. Digest *pins* below are a different thing: they need to durably outlive an
-# issuer restart (the same "not process memory" reasoning as pep/quarantine.py), which is why this
-# module now also talks to the eventstore even though denial logging still doesn't — two different
-# needs, not an inconsistency papered over.
+# WHY stdout for attestation *denials*: see pep/bypass_proxy.py's M1-gap-#3 precedent —
+# `docker compose logs identity` is the loud, attributable trail. Digest *pins* are different
+# state entirely (identity/store.py, a local file, not an event), so they don't go through this
+# logger — there's nothing to log on the happy path, only on refusal.
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 event_logger = logging.getLogger("agentfw.identity")
 
@@ -134,15 +144,15 @@ async def attest(request: Request) -> dict[str, str]:
         )
 
     # --- image digest verification: trust-on-first-use, unconditional (see module WHY block) ---
-    # WHY the pin lookup can itself deny: if the eventstore is unreachable, this module cannot
-    # tell whether it's checking a real container against a real pin — proceeding anyway would be
-    # exactly the "unpinned escape hatch" this ruling removed, just relocated to a different
-    # failure mode. Consistent with pep/quarantine.py's QuarantineCheckUnavailable: fail toward
-    # DENY with a reason that says so, never toward silently trusting.
+    # WHY the pin lookup can itself deny: if the local pin store can't be read or written, this
+    # module cannot tell whether it's checking a real container against a real pin — proceeding
+    # anyway would be exactly the "unpinned escape hatch" this ruling removed, just relocated to a
+    # different failure mode. Consistent with pep/quarantine.py's QuarantineCheckUnavailable: fail
+    # toward DENY with a reason that says so, never toward silently trusting.
     try:
         seed_digest = registered.image_digest or info["image_digest"]
-        pinned_digest = await _get_or_set_pin(info["service"], seed_digest)
-    except httpx.HTTPError as exc:
+        pinned_digest = _get_or_set_pin(info["service"], seed_digest)
+    except (sqlite3.Error, OSError) as exc:
         _log_attestation_denial(f"digest pin check unavailable: {exc}", source_ip, info)
         raise HTTPException(
             status_code=403, detail="attestation failed: digest pin check unavailable"
@@ -210,16 +220,13 @@ def _log_attestation_denial(reason: str, source_ip: str, info: dict[str, str] | 
     event_logger.info(json.dumps(event))
 
 
-async def _get_or_set_pin(service: str, seed_digest: str) -> str:
-    """Ask the eventstore for the pinned digest for `service`, pinning `seed_digest` if this is
-    the first attestation ever for it. Raises httpx.HTTPError (caught by the caller) if the
-    eventstore can't be reached — this is a real dependency now, not a best-effort nicety."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{EVENTSTORE_URL}/digest-pin/{service}", json={"digest": seed_digest}, timeout=5.0
-        )
-        resp.raise_for_status()
-        return resp.json()["digest"]
+def _get_or_set_pin(service: str, seed_digest: str) -> str:
+    """Look up the pinned digest for `service` in identity's own local SQLite file, pinning
+    `seed_digest` if this is the first attestation ever for it. Raises sqlite3.Error or OSError
+    (caught by the caller) if the local store can't be read or written."""
+    return pin_store.get_or_set(
+        service, seed_digest, datetime.now(UTC).isoformat(), IDENTITY_DB_PATH
+    )
 
 
 async def _lookup_caller_container(source_ip: str) -> dict[str, str] | None:

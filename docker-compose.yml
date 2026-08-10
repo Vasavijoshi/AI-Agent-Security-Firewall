@@ -1,9 +1,7 @@
 # M2 policy engine + identity. Network split (AGENTFW_CONTEXT.md §5): agent-net has no internet
-# route at all. pep and identity are the two dual-homed containers (identity since the pre-M3
-# round-4 digest-pinning ruling — see its own networks: WHY below); neither gives the agent a new
-# way out, since neither proxies agent traffic. Every service builds from the repo root as context
-# (not its own subdirectory) because pep/identity import sibling packages and talk to eventstore
-# over HTTP.
+# route at all. pep is the only dual-homed container. Every service builds from the repo root as
+# context (not its own subdirectory) because pep/identity import sibling packages and talk to
+# eventstore over HTTP.
 
 networks:
   agent-net:
@@ -19,16 +17,18 @@ services:
     build:
       context: .
       dockerfile: identity/Dockerfile
-    # WHY egress-net too now (pre-M3 ruling, round 4): trust-on-first-use digest pinning has to be
-    # checked against a value that survives an issuer restart, which means the eventstore
-    # (events/app.py's /digest-pin routes) — identity needs a real route there. This makes
-    # identity the second dual-homed container, not just pep, but it doesn't reopen the
-    # non-bypassability property that invariant protects: identity never proxies agent traffic and
-    # has no route *from* agent-net to the internet through it — it's a control-plane component
-    # gaining a control-plane dependency, not a new way out for the agent.
-    networks: [agent-net, egress-net]
+    # WHY agent-net only, still (pre-M3 ruling, round 5, correcting round 4): round 4 put identity
+    # on egress-net too, so trust-on-first-use digest pinning could persist to the eventstore. That
+    # made identity a second dual-homed container — a second potential bridge from agent-net to the
+    # internet — regardless of whether identity's own code ever intended to use that route.
+    # Identity mints workload identity; a compromise of it is a high-value target, and giving it
+    # egress turns that compromise into an exfiltration path. Digest pins are identity's own state,
+    # not a shared security event, so they don't need eventstore at all: identity/store.py persists
+    # them to a local SQLite file on the identity-data volume below. `pep` is once more the only
+    # dual-homed container.
+    networks: [agent-net]
     environment:
-      EVENTSTORE_URL: http://eventstore:8090
+      IDENTITY_DB_PATH: /data/identity.db
       # Optional digest pre-seeds — see .env.example. Digest pinning itself is NOT optional or
       # gated by these being set: identity/issuer.py now pins whichever digest it observes on each
       # service's first successful attestation (trust-on-first-use) regardless. Setting one of
@@ -44,14 +44,12 @@ services:
       # container on the host's Docker daemon, not just this project's — bigger blast radius than
       # a "real" node attestor would have. Accepted for this scope; read-only limits it to
       # inspect-only calls (we never issue a write/control call against the socket).
-    depends_on:
-      eventstore:
-        condition: service_healthy
-        # WHY: identity's own /health doesn't check eventstore connectivity, so without this,
-        # identity could report healthy before eventstore is ready and the *first* real /attest
-        # call would fail transiently on "digest pin check unavailable" — a race, not a bug in the
-        # check itself. Ordering container starts here closes it the same way pep's healthcheck
-        # closed the agent-vs-pep race (see pep's own healthcheck WHY below).
+      - identity-data:/data
+      # WHY a named volume, not process memory: digest pins need to survive an issuer restart —
+      # the same "not process memory" reasoning as eventstore-data below, just local to this
+      # container instead of shared. Pin-clearing is a CLI-only admin operation, not an HTTP route
+      # — see identity/admin_cli.py's module WHY for why that's the deliberate choice here, not a
+      # loopback-bound listener.
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request as u; u.urlopen('http://localhost:8082/health', timeout=2)"]
@@ -141,10 +139,8 @@ services:
       context: .
       dockerfile: pep/Dockerfile
     networks: [agent-net, egress-net] # WHY: every byte the agent sends outward crosses this
-    # boundary (§5) — the property that matters isn't "only dual-homed container" (identity is
-    # dual-homed too, as of the round-4 digest-pinning ruling below) but "only container the agent
-    # can reach that also reaches the internet." identity is reachable from agent-net too, but
-    # identity forwards nothing anywhere on the agent's behalf.
+    # boundary (§5) — pep is the only dual-homed container, the only container the agent can reach
+    # that also reaches the internet.
     environment:
       EVENTSTORE_URL: http://eventstore:8090
       IDENTITY_ISSUER_URL: http://identity:8082
@@ -207,3 +203,4 @@ services:
 
 volumes:
   eventstore-data:
+  identity-data:

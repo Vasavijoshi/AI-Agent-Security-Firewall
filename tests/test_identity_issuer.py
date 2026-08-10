@@ -13,8 +13,8 @@ import logging
 import pytest
 from fastapi.testclient import TestClient
 
-import events.store as event_store
 import identity.issuer as issuer
+import identity.store as identity_store
 
 
 def _fake_lookup(service: str, image_digest: str, container_id: str = "deadbeefcafe1234567890"):
@@ -26,17 +26,12 @@ def _fake_lookup(service: str, image_digest: str, container_id: str = "deadbeefc
 
 @pytest.fixture
 def fake_pin_store(monkeypatch, tmp_path):
-    """Substitutes only the network boundary — identity/issuer.py's own _get_or_set_pin() call
-    dispatches straight to events/store.py's real SQLite functions on a scratch file, the same
-    pattern tests/test_quarantine.py uses for the eventstore-backed quarantine store."""
-    db_path = str(tmp_path / "events.db")
-
-    async def fake_get_or_set_pin(service: str, seed_digest: str) -> str:
-        return event_store.digest_pin_get_or_set(
-            service, seed_digest, "2026-01-01T00:00:00Z", db_path
-        )
-
-    monkeypatch.setattr(issuer, "_get_or_set_pin", fake_get_or_set_pin)
+    """Points identity/issuer.py's IDENTITY_DB_PATH at a scratch SQLite file instead of the real
+    volume-mounted path — identity/issuer.py's own _get_or_set_pin() is exercised unchanged, since
+    (post pre-M3 round 5) it's a local, synchronous call into identity/store.py, not a network
+    call to fake out."""
+    db_path = str(tmp_path / "identity.db")
+    monkeypatch.setattr(issuer, "IDENTITY_DB_PATH", db_path)
     return db_path
 
 
@@ -58,7 +53,7 @@ def test_first_attestation_pins_whatever_digest_it_observes(monkeypatch, fake_pi
     client = TestClient(issuer.app)
     response = client.post("/attest")
     assert response.status_code == 200
-    assert event_store.digest_pin_list(fake_pin_store) == {"agent": "sha256:first-boot"}
+    assert identity_store.list_all(fake_pin_store) == {"agent": "sha256:first-boot"}
 
 
 def test_second_attestation_with_the_same_digest_succeeds(monkeypatch, fake_pin_store):
@@ -132,7 +127,7 @@ def test_preseeded_digest_is_pinned_on_the_very_first_call(monkeypatch, fake_pin
 
     client = TestClient(issuer.app)
     assert client.post("/attest").status_code == 200
-    assert event_store.digest_pin_list(fake_pin_store) == {"agent": "sha256:known-good"}
+    assert identity_store.list_all(fake_pin_store) == {"agent": "sha256:known-good"}
 
 
 def test_preseed_catches_a_mismatch_on_attestation_one_not_just_two(
@@ -168,10 +163,10 @@ def test_attestation_refused_when_the_pin_store_is_unreachable(monkeypatch, capl
         issuer, "_lookup_caller_container", _fake_lookup("agent", "sha256:whatever")
     )
 
-    import httpx
+    import sqlite3
 
-    async def _boom(_service, _seed_digest):
-        raise httpx.HTTPError("simulated eventstore outage")
+    def _boom(_service, _seed_digest):
+        raise sqlite3.OperationalError("simulated local disk outage")
 
     monkeypatch.setattr(issuer, "_get_or_set_pin", _boom)
 

@@ -20,9 +20,6 @@ from fastapi.responses import JSONResponse
 
 from events.store import (
     EventWriteError,
-    digest_pin_clear,
-    digest_pin_get_or_set,
-    digest_pin_list,
     quarantine_enter,
     quarantine_list,
     quarantine_release,
@@ -85,36 +82,3 @@ def release_quarantine(agent_id: str) -> dict[str, str]:
     if not quarantine_release(agent_id, DB_PATH):
         raise HTTPException(status_code=404, detail=f"{agent_id!r} is not quarantined")
     return {"status": "released", "agent_id": agent_id}
-
-
-# --- attestation digest pins (pre-M3 ruling: trust-on-first-use replaces the unpinned escape
-# hatch) ---
-# WHY identity/issuer.py needs to reach these at all, and why that changes its network topology:
-# TOFU pinning has to be checked against a value that outlives any single attestation call and
-# survives an issuer restart (the same "not process memory" reasoning as quarantine above) — the
-# eventstore is where that lives. identity/issuer.py is now on egress-net as well as agent-net to
-# reach it (docker-compose.yml), which is a real change from "pep is the only dual-homed
-# container": identity doesn't proxy agent traffic and never will, so this doesn't reopen the
-# non-bypassability property that invariant protects — it's a control-plane component gaining a
-# control-plane dependency, not a new route out for the agent.
-@app.post("/digest-pin/{service}")
-def get_or_set_digest_pin(service: str, body: dict[str, str]) -> dict[str, str]:
-    """The normal operational path (called on every attest, not just the first) — returns the
-    authoritative pinned digest, pinning `body["digest"]` if this is the first call for
-    `service`. See events/store.py's digest_pin_get_or_set() for the race-safety argument."""
-    pinned = digest_pin_get_or_set(service, body["digest"], datetime.now(UTC).isoformat(), DB_PATH)
-    return {"service": service, "digest": pinned}
-
-
-@app.get("/digest-pins")
-def list_digest_pins() -> dict[str, str]:
-    return digest_pin_list(DB_PATH)
-
-
-@app.delete("/digest-pin/{service}")
-def clear_digest_pin(service: str) -> dict[str, str]:
-    """The admin operation: clear a pin for a legitimate rebuild, so the next attestation
-    re-establishes trust from scratch. Same isolation as quarantine release, same reasoning."""
-    if not digest_pin_clear(service, DB_PATH):
-        raise HTTPException(status_code=404, detail=f"{service!r} has no pin")
-    return {"status": "cleared", "service": service}
