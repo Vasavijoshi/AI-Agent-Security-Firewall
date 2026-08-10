@@ -154,12 +154,23 @@ def run_pipeline(
     t0 = time.perf_counter()
     data_class = policy_result.max_data_class or "public"
     dlp_decision, dlp_reason = Decision.ALLOW, "dlp_pass"
-    if policy_result.decision == Decision.ALLOW and (policy_result.inspect or _is_external(fqdn)):
+    # WHY "or tool == 'agent.invoke'" is its own unconditional trigger, not folded into
+    # policy_result.inspect/_is_external: agent.invoke has no fqdn (east-west calls aren't
+    # destination-shaped) and evaluate_east_west() never sets inspect, so neither of the other two
+    # conditions can ever fire for it — without this, exfiltration riding inside an agent-to-agent
+    # call would be structurally invisible to DLP no matter what the bundle allows (pre-M3 ruling:
+    # this is exactly what A4 needs stage 5 to actually cover, not just stage 3's default-deny).
+    if policy_result.decision == Decision.ALLOW and (
+        policy_result.inspect or _is_external(fqdn) or tool == "agent.invoke"
+    ):
         # WHY "url" is excluded from the scan: it's the destination, already governed separately
         # by policy (stage 3) — and URLs are structurally diverse enough (scheme, dots, slashes,
         # a mix of cases) to trip a generic entropy threshold on their own, which would flag
         # nearly every http.get as a false positive. The actual exfiltration risk is in what's
-        # being SENT (a POST/email body, a query filter), not the address it's sent to.
+        # being SENT (a POST/email body, a query filter, or — for agent.invoke — the nested
+        # arguments handed to the target workload's tool) not the address it's sent to. str()-ing
+        # the whole arguments dict (agent.invoke's "arguments" value is itself a nested dict)
+        # already puts every value inside it into the scanned blob — no separate unwrap needed.
         blob = " ".join(str(v) for k, v in arguments.items() if k != "url")
         findings = dlp.scan(blob)
         verdict = dlp.outcome(findings)

@@ -79,8 +79,8 @@ property-tested in `tests/test_invariants.py`.
 │                                                                                                │
 │   ┌────────────┐          HTTP_PROXY /            ┌────────────────────────────┐              │
 │   │   agent    │ ───────  HTTPS_PROXY=pep:8080 ──▶ │            pep             │              │
-│   │ (loop.py,  │                                   │  (the only dual-homed      │              │
-│   │  tools.py, │                                   │   container — see below)   │              │
+│   │ (loop.py,  │                                   │  (dual-homed — forwards    │              │
+│   │  tools.py, │                                   │   the agent's traffic)     │              │
 │   │  providers)│                                   └──────────────┬─────────────┘              │
 │   └────────────┘                                                  │                             │
 │                                                                    │                             │
@@ -104,9 +104,12 @@ property-tested in `tests/test_invariants.py`.
 └───────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-`pep` is the only container on both networks. `agent` has no other configured route out
-(`HTTP_PROXY`/`HTTPS_PROXY` point at `pep:8080`), and `agent-net` being `internal: true` means that
-even if the agent process is fully compromised and ignores the proxy variables, there is no network
+`pep` is not the only container on both networks — `identity` is too, as of the pre-M3 round-4
+digest-pinning ruling (it needs a route to eventstore to persist trust-on-first-use pins durably).
+The property this diagram is actually proving is narrower and still holds: `agent` has no other
+configured route out (`HTTP_PROXY`/`HTTPS_PROXY` point at `pep:8080`), and `agent-net` being
+`internal: true` means that even if the agent process is fully compromised and ignores the proxy
+variables, there is no network
 path to anywhere but the other containers on `agent-net`. `docker compose exec agent curl
 https://example.com` must fail at the network layer — that command is the whole non-bypassability
 demo, and it costs one line in `docker-compose.yml`, not three weeks of Kubernetes NetworkPolicy.

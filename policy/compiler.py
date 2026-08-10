@@ -14,6 +14,14 @@ KNOWN_ROLES = frozenset({"research_agent", "finance_agent", "support_agent", "ad
 # *bundle* against which roles are allowed to exist in this project, not against what happens to
 # be deployed right now.
 
+KNOWN_WORKLOADS = frozenset({"agent", "finance-agent", "support-agent"})
+# WHY hardcoded here too, not imported from identity/issuer.py's AGENT_REGISTRY: same reasoning as
+# KNOWN_ROLES above, plus a concrete cost to avoid — identity/issuer.py generates an Ed25519
+# keypair and builds a FastAPI app at import time, none of which policy/compiler.py (run in CI,
+# possibly with no Docker available at all) should need to pull in just to validate a YAML file.
+# Mirrors AGENT_REGISTRY's keys; keeping them in sync is a human responsibility, the same trade-off
+# KNOWN_ROLES already makes against policy/bundles/default.yaml's four roles.
+
 
 @dataclass(frozen=True)
 class CompileError:
@@ -41,6 +49,7 @@ def compile_bundle(path: str) -> tuple[Bundle, list[CompileWarning]]:
         _unknown_role_errors(bundle)
         + _overlap_errors(bundle)
         + _missing_critical_path_errors(bundle)
+        + _unknown_workload_errors(bundle)
     )
     if errors:
         summary = "\n".join(f"  [{e.code}] {e.message}" for e in errors)
@@ -56,6 +65,31 @@ def _unknown_role_errors(bundle: Bundle) -> list[CompileError]:
         for r in bundle.rules
         if r.role not in KNOWN_ROLES
     ]
+
+
+def _unknown_workload_errors(bundle: Bundle) -> list[CompileError]:
+    """Same shape as _unknown_role_errors, for the east-west table's different matching
+    dimension: "*" is a real wildcard (matches any workload), never a name to validate against
+    KNOWN_WORKLOADS — everything else must be a workload this project actually deploys."""
+    errors: list[CompileError] = []
+    for r in bundle.east_west_rules:
+        if r.source_workload != "*" and r.source_workload not in KNOWN_WORKLOADS:
+            errors.append(
+                CompileError(
+                    "UNKNOWN_WORKLOAD",
+                    f"east-west rule {r.id!r} references unknown source_workload "
+                    f"{r.source_workload!r}",
+                )
+            )
+        if r.dest_workload != "*" and r.dest_workload not in KNOWN_WORKLOADS:
+            errors.append(
+                CompileError(
+                    "UNKNOWN_WORKLOAD",
+                    f"east-west rule {r.id!r} references unknown dest_workload "
+                    f"{r.dest_workload!r}",
+                )
+            )
+    return errors
 
 
 def _overlap_errors(bundle: Bundle) -> list[CompileError]:

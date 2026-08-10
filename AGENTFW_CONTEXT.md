@@ -132,7 +132,9 @@ agentfw/
 ├── .env.example               # committed;  .env is NOT
 ├── requirements.txt           # each dep justified in a comment
 ├── .github/workflows/ci.yml
-├── docs/{architecture.md,threat-model.md,demo.md}
+├── docs/{architecture.md,threat-model.md,demo.md,verification-log.md}
+│    # verification-log.md: added pre-M3 round 4 — real Docker command + real output + the
+│    # security property it establishes, for every verification run so far, including failures.
 ├── agent/{loop.py,tools.py,providers.py,prompts/,main.py}   # main.py: container entrypoint, added M1
 ├── pep/{proxy.py,pipeline.py,normalize.py,bypass_proxy.py,quarantine.py}
 │    # bypass_proxy.py: M1 gap #3, the :8081 catch-all. quarantine.py: pre-M3 round 3, the
@@ -173,7 +175,14 @@ This is the non-bypassability proof. `docker compose exec agent curl https://exa
 
 *(Pre-M3 multi-agent ruling: this pattern is now applied to three agent-shaped services —
 `agent`, `finance-agent`, `support-agent` — all on `agent-net` only, all with the same
-non-bypassability property. `pep` remains the only container on both networks.)*
+non-bypassability property.*
+
+*Pre-M3 round-4 ruling: `pep` is no longer the only container on both networks — `identity` is
+now dual-homed too, so its trust-on-first-use digest pins (see §2) can be checked against a value
+that survives its own restart, durably persisted on `eventstore`. This doesn't reopen the
+non-bypassability property: that invariant is specifically about the agent having no route except
+through the PEP, and identity never proxies agent traffic or gives the agent anywhere new to go —
+it's a control-plane component reaching a control-plane dependency, not a second way out.)*
 
 ---
 

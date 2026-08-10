@@ -20,6 +20,19 @@ a shared secret.
 # container requires producing an image that actually hashes to the expected value, which is a
 # different, much harder problem. Verifying both is what turns "which label did you set" into
 # "which image are you actually running."
+#
+# WHY trust-on-first-use, not an optional expected-digest check (pre-M3 ruling, round 4): an
+# optional check is off by default, and "off by default" on a fresh clone — exactly
+# AGENTFW_CONTEXT.md §1's acceptance-test configuration — means digest verification was never
+# actually protecting anything unless someone remembered to turn it on. TOFU is unconditional:
+# the first successful attestation for a service pins whatever digest it observed (see
+# events/store.py's digest_pin_get_or_set()), and every later attestation for that service must
+# match or is refused. Named trade-off: the trust window is exactly one attestation, at first
+# boot — an attacker who wins the race to attest first, before the real container does, gets
+# pinned instead of the real image. EXPECTED_DIGEST_* (still optional, still just for pre-seeding)
+# closes that window entirely for anyone willing to configure it: set, it becomes the value pinned
+# on that first call instead of blindly trusting whatever shows up, so a mismatch is caught even
+# on attestation #1.
 """
 
 from __future__ import annotations
@@ -38,13 +51,14 @@ from fastapi import FastAPI, HTTPException, Request
 from identity.tokens import generate_keypair, mint_token, public_key_to_b64
 
 DOCKER_SOCKET = os.environ.get("DOCKER_SOCKET", "/var/run/docker.sock")
+EVENTSTORE_URL = os.environ.get("EVENTSTORE_URL", "http://eventstore:8090")
 
-# WHY stdout, not a durable eventstore write: identity is on agent-net only (it never needs the
-# internet, and giving it a route to eventstore on egress-net would mean touching the network
-# topology the rest of this project's non-bypassability story rests on, for one log line). This
-# mirrors pep/bypass_proxy.py's M1-gap-#3 precedent exactly: `docker compose logs identity` is the
-# loud, attributable trail for attestation denials, at the cost of not showing up in the
-# eventstore/dashboard's durable history. A known, deliberate scope line, not an oversight.
+# WHY stdout, not the eventstore, for attestation *denials* specifically: unchanged from before —
+# see pep/bypass_proxy.py's M1-gap-#3 precedent, `docker compose logs identity` is the loud,
+# attributable trail. Digest *pins* below are a different thing: they need to durably outlive an
+# issuer restart (the same "not process memory" reasoning as pep/quarantine.py), which is why this
+# module now also talks to the eventstore even though denial logging still doesn't — two different
+# needs, not an inconsistency papered over.
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 event_logger = logging.getLogger("agentfw.identity")
 
@@ -52,27 +66,21 @@ event_logger = logging.getLogger("agentfw.identity")
 @dataclass(frozen=True)
 class RegisteredAgent:
     role: str
-    image_digest: str  # expected `ImageID` from the Docker API; "" means unpinned (see below)
+    # WHY still called "image_digest" and still optional: this is now a pre-seed for the TOFU pin
+    # (see the module WHY), not the sole gate — "" means "no pre-seed, pin whatever the first
+    # successful attestation observes" rather than "digest checking is off."
+    image_digest: str
 
 
 def _expected_digest(env_var: str) -> str:
     return os.environ.get(env_var, "")
 
 
-# compose service name -> (role, expected image digest). WHY only "agent" has ever had a live
-# container: docker-compose.yml originally defined a single agent service. Pre-M3 multi-agent adds
-# finance-agent and support-agent as real services (see docker-compose.yml) sharing this same
-# image, distinguished only by which compose service name Docker reports them under — which is
-# exactly the fact this registry, and the digest check below, key off of.
-#
-# WHY image_digest defaults to "" (unpinned) rather than refusing when unset: AGENTFW_CONTEXT.md
-# §1 is a hard constraint — a fresh `git clone && docker compose up` must work with zero manual
-# configuration. A freshly built image's digest isn't knowable before the build finishes, so a
-# fresh clone has nothing to pin against yet. Unset means "digest pinning not configured for this
-# service" (logged loudly on every attest — see _attest_denied below), not "refuse everything until
-# someone configures it," which would break the one acceptance test this whole project is
-# optimized around. Set EXPECTED_DIGEST_AGENT / _FINANCE_AGENT / _SUPPORT_AGENT (e.g. from `docker
-# inspect <image> -f '{{.Id}}'` after building) to get the real protection.
+# compose service name -> (role, optional digest pre-seed). WHY only "agent" has ever had a live
+# container historically: docker-compose.yml originally defined a single agent service. Pre-M3
+# multi-agent adds finance-agent and support-agent as real services (see docker-compose.yml)
+# sharing this same image, distinguished only by which compose service name Docker reports them
+# under — which is exactly the fact this registry keys off of.
 AGENT_REGISTRY: dict[str, RegisteredAgent] = {
     "agent": RegisteredAgent(
         role="research_agent", image_digest=_expected_digest("EXPECTED_DIGEST_AGENT")
@@ -125,28 +133,29 @@ async def attest(request: Request) -> dict[str, str]:
             status_code=403, detail=f"service {info['service']!r} is not in the agent registry"
         )
 
-    # --- image digest verification: the actual hardening (see the module WHY block) ---
-    if registered.image_digest and info["image_digest"] != registered.image_digest:
+    # --- image digest verification: trust-on-first-use, unconditional (see module WHY block) ---
+    # WHY the pin lookup can itself deny: if the eventstore is unreachable, this module cannot
+    # tell whether it's checking a real container against a real pin — proceeding anyway would be
+    # exactly the "unpinned escape hatch" this ruling removed, just relocated to a different
+    # failure mode. Consistent with pep/quarantine.py's QuarantineCheckUnavailable: fail toward
+    # DENY with a reason that says so, never toward silently trusting.
+    try:
+        seed_digest = registered.image_digest or info["image_digest"]
+        pinned_digest = await _get_or_set_pin(info["service"], seed_digest)
+    except httpx.HTTPError as exc:
+        _log_attestation_denial(f"digest pin check unavailable: {exc}", source_ip, info)
+        raise HTTPException(
+            status_code=403, detail="attestation failed: digest pin check unavailable"
+        ) from exc
+
+    if info["image_digest"] != pinned_digest:
         _log_attestation_denial(
-            f"image digest mismatch for service {info['service']!r}: expected "
-            f"{registered.image_digest!r}, got {info['image_digest']!r}",
+            f"image digest mismatch for service {info['service']!r}: pinned "
+            f"{pinned_digest!r}, got {info['image_digest']!r}",
             source_ip,
             info,
         )
         raise HTTPException(status_code=403, detail="attestation failed: image digest mismatch")
-    if not registered.image_digest:
-        # WHY this is its own branch, logged but not refused: unpinned is the honest, expected
-        # state for a fresh clone (see AGENT_REGISTRY's WHY) — surfaced loudly so it's never
-        # mistaken for real digest protection being in effect, without breaking `docker compose up`.
-        event_logger.warning(
-            json.dumps(
-                {
-                    "event": "attestation_unpinned",
-                    "service": info["service"],
-                    "note": "no EXPECTED_DIGEST_* configured — running unverified",
-                }
-            )
-        )
 
     role = registered.role
     spiffe_id = f"spiffe://agentfw.internal/ns/{role}/agent/{info['container_id'][:12]}"
@@ -199,6 +208,18 @@ def _log_attestation_denial(reason: str, source_ip: str, info: dict[str, str] | 
         "latency_ms": {},
     }
     event_logger.info(json.dumps(event))
+
+
+async def _get_or_set_pin(service: str, seed_digest: str) -> str:
+    """Ask the eventstore for the pinned digest for `service`, pinning `seed_digest` if this is
+    the first attestation ever for it. Raises httpx.HTTPError (caught by the caller) if the
+    eventstore can't be reached — this is a real dependency now, not a best-effort nicety."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{EVENTSTORE_URL}/digest-pin/{service}", json={"digest": seed_digest}, timeout=5.0
+        )
+        resp.raise_for_status()
+        return resp.json()["digest"]
 
 
 async def _lookup_caller_container(source_ip: str) -> dict[str, str] | None:

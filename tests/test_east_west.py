@@ -176,3 +176,81 @@ def test_unregistered_agent_id_still_denied_not_a_type_error():
     )
     assert result.decision == Decision.DENY
     pipeline._ISSUER_PUBLIC_KEY = None
+
+
+# =====================================================================================
+# DLP must cover agent.invoke's nested arguments (pre-M3 round-4 ruling)
+# =====================================================================================
+
+
+def test_agent_invoke_nested_arguments_are_dlp_scanned(monkeypatch):
+    """The default bundle default-denies every east-west call, so DLP never gets a chance to run
+    against one in the deployed configuration — this test grants a temporary ALLOW specifically to
+    prove stage 5 itself covers agent.invoke's nested payload, not just that stage 3 blocks it."""
+    from dataclasses import replace
+
+    from policy.engine import EastWestRule
+
+    permissive_bundle = replace(
+        pipeline.BUNDLE,
+        east_west_rules=(
+            EastWestRule("EW-TEST-ALLOW", 100, "agent", "finance-agent", "invoke", Decision.ALLOW),
+        ),
+    )
+    monkeypatch.setattr(pipeline, "BUNDLE", permissive_bundle)
+
+    keypair = generate_keypair()
+    pipeline._ISSUER_PUBLIC_KEY = keypair[1]
+    token = _token(keypair, "research_agent", service="agent")
+
+    result = pipeline.run_pipeline(
+        token=token,
+        peer_ip=PEER_IP,
+        session_id="s1",
+        tool="agent.invoke",
+        arguments={
+            "target_service": "finance-agent",
+            "tool": "db.query",
+            # WHY this specific value: AKIA + 16 chars is DLP's highest-precision, deterministic
+            # BLOCK trigger (dlp/detectors.py's AWS_ACCESS_KEY_ID regex) — no Luhn/entropy
+            # randomness to keep the test stable.
+            "arguments": {"table": "ledger", "filter": "key=AKIAABCDEFGHIJKLMNOP"},
+        },
+    )
+    # East-west policy alone would ALLOW this call — DLP is what has to catch the exfiltration
+    # attempt riding inside it, and DENY wins the final min() over the lattice.
+    assert result.decision == Decision.DENY
+    assert result.reason == "dlp_block"
+    pipeline._ISSUER_PUBLIC_KEY = None
+
+
+def test_agent_invoke_without_a_secret_is_unaffected_by_the_dlp_change(monkeypatch):
+    from dataclasses import replace
+
+    from policy.engine import EastWestRule
+
+    permissive_bundle = replace(
+        pipeline.BUNDLE,
+        east_west_rules=(
+            EastWestRule("EW-TEST-ALLOW", 100, "agent", "finance-agent", "invoke", Decision.ALLOW),
+        ),
+    )
+    monkeypatch.setattr(pipeline, "BUNDLE", permissive_bundle)
+
+    keypair = generate_keypair()
+    pipeline._ISSUER_PUBLIC_KEY = keypair[1]
+    token = _token(keypair, "research_agent", service="agent")
+
+    result = pipeline.run_pipeline(
+        token=token,
+        peer_ip=PEER_IP,
+        session_id="s1",
+        tool="agent.invoke",
+        arguments={
+            "target_service": "finance-agent",
+            "tool": "db.query",
+            "arguments": {"table": "ledger"},
+        },
+    )
+    assert result.decision == Decision.ALLOW
+    pipeline._ISSUER_PUBLIC_KEY = None

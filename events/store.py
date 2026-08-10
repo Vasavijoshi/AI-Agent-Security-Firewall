@@ -146,3 +146,58 @@ def quarantine_is_active(agent_id: str, db_path: str) -> bool:
         conn.execute(_QUARANTINE_TABLE_SQL)
         row = conn.execute("SELECT 1 FROM quarantine WHERE agent_id = ?", (agent_id,)).fetchone()
     return row is not None
+
+
+# --- attestation digest pins (pre-M3 ruling, TOFU replaces the unpinned escape hatch) ---
+# WHY a dedicated table: same reasoning as quarantine above — this is current-membership (which
+# digest is trusted for which service, right now), not history worth replaying.
+_DIGEST_PIN_TABLE_SQL = (
+    "CREATE TABLE IF NOT EXISTS digest_pins ("
+    "service TEXT PRIMARY KEY, "
+    "digest TEXT NOT NULL, "
+    "pinned_at TEXT NOT NULL)"
+)
+
+
+def digest_pin_get_or_set(service: str, observed_digest: str, pinned_at: str, db_path: str) -> str:
+    """Return the pinned digest for `service`, pinning `observed_digest` as the trusted value if
+    no pin exists yet. This IS trust-on-first-use: whatever digest is offered the first time this
+    is called for a service becomes authoritative for every call after it.
+
+    WHY this is race-safe by construction, not by locking: INSERT OR IGNORE plus a read-back means
+    two near-simultaneous "first" attestations for the same service can't each believe their own
+    digest won — exactly one INSERT actually lands (SQLite's own primary-key uniqueness enforces
+    that), and the read-back after it returns that same winning value to both callers, so the
+    "loser" correctly sees and is checked against the winner's digest instead of silently trusting
+    its own.
+    """
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(_DIGEST_PIN_TABLE_SQL)
+        conn.execute(
+            "INSERT OR IGNORE INTO digest_pins (service, digest, pinned_at) VALUES (?, ?, ?)",
+            (service, observed_digest, pinned_at),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT digest FROM digest_pins WHERE service = ?", (service,)
+        ).fetchone()
+    return row[0]
+
+
+def digest_pin_clear(service: str, db_path: str) -> bool:
+    """The only way to change a pin: delete it, so the next attestation re-establishes trust from
+    scratch (AGENTFW_CONTEXT.md pre-M3 ruling — for a legitimate rebuild). Returns True if a pin
+    actually existed."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(_DIGEST_PIN_TABLE_SQL)
+        cursor = conn.execute("DELETE FROM digest_pins WHERE service = ?", (service,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def digest_pin_list(db_path: str) -> dict[str, str]:
+    """service -> pinned digest, for every service that has ever attested successfully."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(_DIGEST_PIN_TABLE_SQL)
+        rows = conn.execute("SELECT service, digest FROM digest_pins").fetchall()
+    return dict(rows)
