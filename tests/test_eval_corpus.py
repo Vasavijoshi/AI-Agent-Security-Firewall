@@ -15,6 +15,7 @@ from evals.score import (
     load_corpus,
     percentile,
     replay_corpus,
+    run_evaluation,
 )
 
 
@@ -51,6 +52,24 @@ def test_non_dict_arguments_raises(tmp_path):
         "tool": "http.get",
         "arguments": "not-a-dict",
         "description": "x",
+        "offset_seconds": 0.0,
+    }
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    with pytest.raises(CorpusValidationError):
+        load_corpus(str(path))
+
+
+def test_non_numeric_offset_seconds_raises(tmp_path):
+    path = tmp_path / "bad.jsonl"
+    record = {
+        "id": "X-1",
+        "category": "c",
+        "role": "research_agent",
+        "service": "agent",
+        "tool": "http.get",
+        "arguments": {"url": "https://api.trusted-news.com/x"},
+        "description": "x",
+        "offset_seconds": "soon",
     }
     path.write_text(json.dumps(record) + "\n", encoding="utf-8")
     with pytest.raises(CorpusValidationError):
@@ -67,6 +86,7 @@ def test_blank_lines_are_skipped(tmp_path):
         "tool": "http.get",
         "arguments": {"url": "https://api.trusted-news.com/x"},
         "description": "x",
+        "offset_seconds": 0.0,
     }
     path.write_text("\n" + json.dumps(record) + "\n\n", encoding="utf-8")
     records = load_corpus(str(path))
@@ -84,6 +104,28 @@ def test_percentile_on_empty_list_is_zero():
     assert percentile([], 50) == 0.0
 
 
+def test_run_evaluation_actually_uses_the_warmed_up_baseline():
+    """Regression test for a real bug: run_evaluation() used to call
+    common.reset_process_state() *after* RiskScorer.warm_up(), which wiped the org/agent novelty
+    state warm_up() had just seeded, so every corpus run scored against completely cold state
+    regardless of risk/baseline.jsonl's content — a benign corpus with zero clean ALLOWs (block +
+    friction summing to exactly 100%) was the symptom that caught it. A destination baselined for
+    a registered agent (research_agent's "api.trusted-news.com") must not still look brand-new by
+    the time the corpus replay reaches it."""
+    import attacks.common as common
+    import risk.scorer as risk_scorer
+
+    common.reset_process_state()
+    from risk.scorer import RiskScorer
+
+    RiskScorer.warm_up()
+    assert "api.trusted-news.com" in risk_scorer._SEEN_BY_ORG  # would fail if wiped right after
+
+    report = run_evaluation()
+    assert report["false_positive_rate"] < 1.0  # not every benign call blocked
+    assert report["friction_rate"] < 1.0  # not literally 100% friction either
+
+
 def test_replay_corpus_returns_one_decision_and_latency_per_record(tmp_path):
     path = tmp_path / "tiny.jsonl"
     records = [
@@ -95,6 +137,7 @@ def test_replay_corpus_returns_one_decision_and_latency_per_record(tmp_path):
             "tool": "http.get",
             "arguments": {"url": "https://api.trusted-news.com/x"},
             "description": "x",
+            "offset_seconds": i * 200.0,  # well-spaced: no RATE_ANOMALY interference
         }
         for i in range(3)
     ]
@@ -104,3 +147,4 @@ def test_replay_corpus_returns_one_decision_and_latency_per_record(tmp_path):
     assert len(outcome.decisions) == 3
     assert len(outcome.latencies_ms) == 3
     assert all(ms >= 0 for ms in outcome.latencies_ms)
+    assert outcome.rate_anomaly_hits == 0

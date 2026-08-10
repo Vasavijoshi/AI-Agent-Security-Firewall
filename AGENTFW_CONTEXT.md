@@ -346,8 +346,26 @@ designed fresh (documented in `evals/score.py`'s own module docstring). `dashboa
 lines) reads the live eventstore for real; its page body is guarded by `if __name__ ==
 "__main__":` so `risk_buckets()`/`top_denied_destinations()` stay unit-testable without a
 Streamlit runtime. See the README's Results section for the actual measured numbers and their
-caveats — none invented, including an honestly-reported 96.9% benign friction rate and a 3.1%
-benign false-positive rate, both explained rather than tuned away.
+caveats — none invented.
+
+**M3 correction (same session, after review):** the first measured numbers (96.9% benign friction,
+3.1% false-positive) were flagged as implausible — friction + false-positive summing to exactly
+100% means zero benign records ever landed on a clean `ALLOW`, which a real distribution doesn't
+do — and turned out to be two real bugs, not calibration findings. First: `run_evaluation()` called
+`RiskScorer.warm_up()` then immediately `reset_process_state()`, wiping the seed `warm_up()` had
+just built, so every corpus replay scored against completely cold state regardless of
+`risk/baseline.jsonl`. Fixed by reordering, plus extending the baseline to cover several
+bundle-allowed destinations registered agents legitimately use but the baseline never listed.
+Second, smaller but still real: `risk/scorer.py`'s `RATE_ANOMALY` factor read the real wall clock,
+so replaying 65+ records in under a second of real time manufactured most of the anomaly signal
+from harness speed, not traffic shape. Fixed by giving the rate-window logic an injectable clock
+(`risk.scorer.set_clock()`, production unchanged) and adding a real `offset_seconds` timestamp to
+the corpus schema with realistic per-role spacing — attack bursts tracked per compromised *service*,
+not per narrative category, after an initial version diluted every individual agent's own rate
+below the threshold by interleaving roles within a category. Final numbers: 0.0% false-positive,
+58.5% friction, `RATE_ANOMALY` firing on 69.7% of attack traffic vs. 4.6% of benign — a signal that
+actually separates the two, which is what was being tested for. No decision threshold was changed
+to get here.
 
 **M4 — The packaging.** README with diagram and demo GIF; `docs/demo.md` 5-minute walkthrough; measured p50/p95/p99 PEP latency; threat model doc; resume bullets filled with real numbers.
 *Done when:* a stranger can run the acceptance test in §0 successfully.

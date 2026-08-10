@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,25 @@ from typing import Any
 from policy.engine import Decision
 
 DEFAULT_BASELINE_PATH = "risk/baseline.jsonl"
+
+# WHY the rate-window logic reads _clock() instead of calling time.time() directly: security
+# logic that reads the wall clock directly cannot be tested deterministically — the clock is a
+# dependency, same as any other. Production never touches this (it's time.time by default);
+# evals/score.py's replay_corpus() swaps it for a synthetic clock driven by each corpus record's
+# own recorded offset_seconds, so RATE_ANOMALY reflects the *data's* timing (a real attacker's
+# rapid-fire burst, a real support agent's paced ticket queue) rather than however fast this
+# process happens to iterate a static corpus. Nothing in this module special-cases being replayed
+# — set_clock() is the only seam, and every caller of _clock() below is unaware it exists.
+_clock: Callable[[], float] = time.time
+
+
+def set_clock(clock: Callable[[], float]) -> None:
+    """Swap the time source _is_rate_anomalous()/record_outcome() read. Callers that swap it are
+    responsible for restoring it (typically via try/finally) — this module does not track whether
+    it's still the real wall clock."""
+    global _clock
+    _clock = clock
+
 
 # --- factor point values (AgentFW_Architecture_v1.md §8) ---
 THREAT_INTEL_HIT = 60
@@ -178,7 +198,7 @@ def record_outcome(
     """Update behavioral state after the final decision is known. Called once per completed
     pipeline run (AGENTFW_CONTEXT.md §2 stage 8), never before — scoring the *next* call must see
     this call's outcome, not this one."""
-    now = time.time()
+    now = _clock()
     _CALL_TIMES.setdefault(agent_id, []).append(now)
     _CALL_TIMES[agent_id] = [t for t in _CALL_TIMES[agent_id] if now - t <= _RATE_WINDOW_SECONDS]
 
@@ -198,7 +218,7 @@ def record_outcome(
 
 
 def _is_rate_anomalous(agent_id: str) -> bool:
-    now = time.time()
+    now = _clock()
     recent = [t for t in _CALL_TIMES.get(agent_id, []) if now - t <= _RATE_WINDOW_SECONDS]
     return len(recent) >= _RATE_THRESHOLD
 

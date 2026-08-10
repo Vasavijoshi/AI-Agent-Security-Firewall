@@ -61,11 +61,13 @@ not rounded away — see the explanations under the table.
 | Attack corpus size | 66 |
 | Benign corpus size | 65 |
 | Block rate (attack corpus) | 98.5% (65/66) |
-| False-positive rate (benign corpus) | 3.1% (2/65) |
-| Friction rate (benign corpus, RATE_LIMIT/REQUIRE_APPROVAL) | 96.9% (63/65) |
-| Pipeline latency, p50 | 0.369 ms |
-| Pipeline latency, p95 | 0.582 ms |
-| Pipeline latency, p99 | 0.854 ms |
+| False-positive rate (benign corpus) | 0.0% (0/65) |
+| Friction rate (benign corpus, RATE_LIMIT/REQUIRE_APPROVAL) | 58.5% (38/65) |
+| `RATE_ANOMALY` firing rate, attack corpus | 69.7% (46/66) |
+| `RATE_ANOMALY` firing rate, benign corpus | 4.6% (3/65) |
+| Pipeline latency, p50 | 0.251 ms |
+| Pipeline latency, p95 | 0.556 ms |
+| Pipeline latency, p99 | 0.719 ms |
 
 **What these numbers actually measure, and what they don't:** every replay above is an in-process
 call into `pep.pipeline.run_pipeline()` with a genuinely signed token — real identity
@@ -81,21 +83,49 @@ milestone's own design — see the caveat above. In this no-Docker environment t
 local check happened to show a denial. Run `docker compose exec agent python -m attacks.run_all`
 against a real `docker compose up -d` stack to get the true count.
 
-**The friction rate is real, and it's high — 96.9%, not a typo.** Most of the benign corpus lands
-on `RATE_LIMIT`, not a clean `ALLOW`. This is cold-start novelty scoring doing exactly what it's
-designed to do (`risk/scorer.py`'s `DEST_UNKNOWN_TO_ORG`/`DEST_NEVER_SEEN_BY_AGENT` factors), run
-against a corpus deliberately built to hit many different destinations/tables/tools for category
-coverage — the opposite of the repeated-narrow traffic a real warmed-up deployment would see after
-a few days. It is a genuine, unmassaged finding about the cost of novelty-based scoring on a
-diverse workload, not a bug hidden by picking an easier corpus.
+**A real bug was found and fixed while producing these numbers, and the first version of this
+table was wrong because of it.** An earlier run reported false-positive 3.1% and friction 96.9% —
+summing to exactly 100%, meaning *zero* benign records ever landed on a clean `ALLOW`. That's not
+a real distribution; it was `evals/score.py` calling `RiskScorer.warm_up()` and then immediately
+wiping the seed it had just built (`attacks.common.reset_process_state()` ran second, clearing the
+same org/agent novelty state `warm_up()` had populated), so every corpus replay scored against
+completely cold state regardless of `risk/baseline.jsonl`'s content. Fixed by reordering
+(`evals/score.py`'s `run_evaluation()`) and by extending `risk/baseline.jsonl` to cover several
+bundle-allowed destinations (three `*.arxiv.org` subdomains, one more `*@approved-helpdesk.com`
+sender) that registered agents legitimately use but the baseline never listed — each new baseline
+line independently verified against the real policy engine as genuinely `ALLOW`-shaped for its
+role, not just appended and trusted.
 
-**The 3.1% false-positive rate (2 of 65 benign calls) is also real**, not tuned away: both are
-`finance_agent` reading a confidential table (`ledger`/`invoices`) for the first time, immediately
-after a burst of legitimate rapid calls earlier in the same corpus run — `RATE_ANOMALY` (a burst
-of >5 calls/60s, a realistic batch-processing pattern) stacks with first-time novelty and the
-`confidential` data-class factor to just cross the 75-point `CRITICAL`/`QUARANTINE` threshold. A
-real deployment with `risk/baseline.jsonl`-style warmed-up history for these specific tables would
-likely not see this; a brand-new one doing a legitimate batch job on day one plausibly would.
+**Fixing that dropped friction to 90.8%, still implausibly high — and that second number was also
+an artifact, not a finding.** `replay_corpus()` iterates 65+ records in well under a second of real
+wall-clock time; `risk/scorer.py`'s `RATE_ANOMALY` factor (`>5 calls/60s`) read the real clock, so
+the harness itself was generating most of the signal it measured, regardless of how the underlying
+traffic was actually spaced in time. Fixed by giving the rate-window logic an explicit, injectable
+time source (`risk.scorer.set_clock()` — production still reads the real wall clock; nothing in the
+scorer special-cases being replayed) and adding a real timestamp to the corpus schema
+(`offset_seconds`, seconds since that corpus's own replay start) with realistic per-category
+spacing: research browsing and ticket handling are minutes apart, not seconds; attack records burst
+per *service* (a compromised workload's own continuous rapid-fire session — an early version bucketed
+bursts by narrative category instead of by which agent was acting, which diluted every individual
+agent's own call rate below the anomaly threshold and had to be fixed too).
+
+**The result actually separates attack from benign traffic, which is the property that matters:**
+`RATE_ANOMALY` fires on 69.7% of attack-corpus calls (rapid enumeration, exfiltration loops, and
+denial-probing genuinely do look like bursts) and only 4.6% of benign-corpus calls — and that
+residual 4.6% is a disclosed, deliberate edge case (`legit_repeated_calls`: a live-feed poll spaced
+8–12 seconds apart, tight enough that a real deployment doing the same thing would plausibly trip
+the same factor — an honest cost of that polling cadence, not a rig artifact). A factor firing at
+similar rates on both corpora would have carried no information; this one doesn't.
+
+**Final false-positive rate is 0.0%** (was 3.1%, entirely explained by the baseline-coverage bug
+above — no threshold was touched to reach this). **Final friction rate is 58.5%** (was 96.9% →
+90.8% → 58.5% across the two fixes) — still the majority of benign traffic, which is a real,
+unmassaged cost of `RATE_LIMIT`/`REQUIRE_APPROVAL` firing on cold-start destination novelty
+(`DEST_UNKNOWN_TO_ORG`/`DEST_NEVER_SEEN_BY_AGENT`) against a corpus deliberately built to cover many
+different destinations/tables for category coverage, not the repeated-narrow traffic a long-running
+warmed-up deployment would mostly see. No decision-lattice threshold or band boundary was changed
+anywhere in this process — every number above came from fixing what the harness measured, not from
+changing what the firewall does.
 
 ## How it works
 

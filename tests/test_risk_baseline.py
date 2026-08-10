@@ -32,7 +32,12 @@ def _reset_state(monkeypatch):
 
 def test_warm_up_replays_the_real_baseline_file():
     count = RiskScorer.warm_up()
-    assert count == 200
+    # WHY 240, not a magic number restated blindly: M3's eval-corpus work found the baseline
+    # missing coverage for several bundle-allowed destinations registered agents legitimately use
+    # (astro-ph/hep-th/quant-ph.arxiv.org, one more approved-helpdesk sender) — see the file's own
+    # append and evals/score.py's run_evaluation() WHY for the bug this fixed (reset_process_state()
+    # was wiping the seed this count depends on, immediately after warm_up() populated it).
+    assert count == 240
     assert "api.trusted-news.com" in risk_scorer._SEEN_BY_ORG
 
 
@@ -173,7 +178,7 @@ def test_baseline_file_has_no_denied_or_attack_shaped_entries():
     with open("risk/baseline.jsonl", encoding="utf-8") as f:
         events = [json.loads(line) for line in f if line.strip()]
 
-    assert len(events) == 200
+    assert len(events) == 240
     for event in events:
         fqdn = event["destination_key"] if event["tool"].startswith("http.") else None
         resource = event["destination_key"] if not event["tool"].startswith("http.") else None

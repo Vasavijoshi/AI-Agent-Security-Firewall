@@ -19,7 +19,7 @@ nothing pre-existing to match, since no evaluation input schema existed in this 
 milestone:
 
     {"id": str, "category": str, "role": str, "service": str, "tool": str,
-     "arguments": {...}, "description": str}
+     "arguments": {...}, "description": str, "offset_seconds": number}
 
 One record = one tool call, replayed through pep.pipeline.run_pipeline() with a genuinely signed
 token for `role`/`service` (attacks.common.run_locally — the same real-pipeline mechanism the nine
@@ -34,6 +34,17 @@ whole point of risk/baseline.jsonl's warm_up() is that a real deployment already
 it. State IS reset once between the attack corpus and the benign corpus (attacks.common.
 reset_process_state(), re-seeded from the baseline each time) so neither corpus's traffic
 contaminates the other's scoring.
+
+WHY offset_seconds exists and what it drives: replaying 65+ records in a tight Python loop takes
+well under a second of real wall-clock time — if risk/scorer.py's rate-window logic read the real
+clock, replay_corpus() would itself manufacture RATE_ANOMALY on almost every record purely from how
+fast this process iterates a list, which is a property of the harness, not the traffic. Each
+record's offset_seconds instead records its own realistic inter-arrival time (seconds since that
+corpus's own replay started), and replay_corpus() drives risk/scorer.py's injectable clock
+(risk.scorer.set_clock()) from those offsets — the scorer's own rate-window code is unmodified and
+unaware it's being replayed (risk/scorer.py's own WHY on _clock explains the seam). Attack records
+are bursty within a category on purpose (the burst often IS the attack); benign records use
+per-category realistic spacing — see the generator's own comments for the reasoning per category.
 """
 
 from __future__ import annotations
@@ -51,7 +62,16 @@ from risk.scorer import RiskScorer
 DEFAULT_ATTACK_CORPUS = "evals/corpus_attack.jsonl"
 DEFAULT_BENIGN_CORPUS = "evals/corpus_benign.jsonl"
 
-REQUIRED_FIELDS = ("id", "category", "role", "service", "tool", "arguments", "description")
+REQUIRED_FIELDS = (
+    "id",
+    "category",
+    "role",
+    "service",
+    "tool",
+    "arguments",
+    "description",
+    "offset_seconds",
+)
 
 
 class CorpusValidationError(Exception):
@@ -68,6 +88,7 @@ class CorpusRecord:
     tool: str
     arguments: dict[str, Any]
     description: str
+    offset_seconds: float
 
 
 def load_corpus(path: str) -> list[CorpusRecord]:
@@ -86,6 +107,10 @@ def load_corpus(path: str) -> list[CorpusRecord]:
             raise CorpusValidationError(f"{path}:{lineno} missing required field(s): {missing}")
         if not isinstance(raw["arguments"], dict):
             raise CorpusValidationError(f"{path}:{lineno} 'arguments' must be an object")
+        if not isinstance(raw["offset_seconds"], int | float) or isinstance(
+            raw["offset_seconds"], bool
+        ):
+            raise CorpusValidationError(f"{path}:{lineno} 'offset_seconds' must be a number")
         records.append(CorpusRecord(**{k: raw[k] for k in REQUIRED_FIELDS}))
     return records
 
@@ -136,27 +161,44 @@ def percentile(values: list[float], pct: float) -> float:
 class ReplayOutcome:
     decisions: list[Decision]
     latencies_ms: list[float]
+    rate_anomaly_hits: int  # how many records had RATE_ANOMALY in their factor vector
 
 
 def replay_corpus(records: list[CorpusRecord]) -> ReplayOutcome:
     """Replay every record through the real pipeline, in order (state accumulates across records —
-    see module WHY). Latency is measured around the actual run_pipeline() call, never invented."""
+    see module WHY), with risk/scorer.py's rate-window clock driven by each record's own
+    offset_seconds rather than the real wall clock — see module WHY on offset_seconds. Latency is
+    measured around the actual run_pipeline() call, never invented; the clock swap doesn't touch
+    that measurement, only what risk/scorer.py's rate-window logic sees when it asks the time."""
     import attacks.common as common
+    import risk.scorer as risk_scorer
 
     decisions: list[Decision] = []
     latencies: list[float] = []
-    for i, rec in enumerate(records):
-        t0 = time.perf_counter()
-        result, _event = common.run_locally(
-            role=rec.role,
-            service=rec.service,
-            tool=rec.tool,
-            arguments=rec.arguments,
-            session_id=f"eval-{rec.id}-{i}",
-        )
-        latencies.append((time.perf_counter() - t0) * 1000)
-        decisions.append(result.decision)
-    return ReplayOutcome(decisions=decisions, latencies_ms=latencies)
+    rate_anomaly_hits = 0
+    corpus_start = time.time()
+    offset_holder = {"value": 0.0}
+    risk_scorer.set_clock(lambda: corpus_start + offset_holder["value"])
+    try:
+        for i, rec in enumerate(records):
+            offset_holder["value"] = rec.offset_seconds
+            t0 = time.perf_counter()
+            result, _event = common.run_locally(
+                role=rec.role,
+                service=rec.service,
+                tool=rec.tool,
+                arguments=rec.arguments,
+                session_id=f"eval-{rec.id}-{i}",
+            )
+            latencies.append((time.perf_counter() - t0) * 1000)
+            decisions.append(result.decision)
+            if any(f["code"] == "RATE_ANOMALY" for f in result.risk_factors):
+                rate_anomaly_hits += 1
+    finally:
+        risk_scorer.set_clock(time.time)
+    return ReplayOutcome(
+        decisions=decisions, latencies_ms=latencies, rate_anomaly_hits=rate_anomaly_hits
+    )
 
 
 def run_evaluation(
@@ -167,12 +209,19 @@ def run_evaluation(
     attack_records = load_corpus(attack_path)
     benign_records = load_corpus(benign_path)
 
-    RiskScorer.warm_up()
+    # WHY reset_process_state() runs BEFORE warm_up(), not after: reset_process_state() clears
+    # risk/scorer.py's _SEEN_BY_ORG/_SEEN_BY_AGENT along with the session/quarantine state it's
+    # actually meant to isolate between the two corpora — calling it after warm_up() silently
+    # discards the baseline seed it just replayed, so every corpus run scores against completely
+    # cold state regardless of risk/baseline.jsonl's content. Caught via a real bug report: a
+    # benign corpus with zero clean ALLOWs (friction + false-positive summing to exactly 100%) is
+    # not a calibration finding, it's this ordering mistake.
     common.reset_process_state()
+    RiskScorer.warm_up()
     attack_outcome = replay_corpus(attack_records)
 
-    RiskScorer.warm_up()
     common.reset_process_state()
+    RiskScorer.warm_up()
     benign_outcome = replay_corpus(benign_records)
 
     all_latencies = attack_outcome.latencies_ms + benign_outcome.latencies_ms
@@ -187,6 +236,12 @@ def run_evaluation(
         "p99_latency_ms": percentile(all_latencies, 99),
         "mean_latency_ms": statistics.fmean(all_latencies) if all_latencies else 0.0,
         "total_calls_replayed": len(all_latencies),
+        "attack_rate_anomaly_rate": attack_outcome.rate_anomaly_hits / len(attack_records)
+        if attack_records
+        else 0.0,
+        "benign_rate_anomaly_rate": benign_outcome.rate_anomaly_hits / len(benign_records)
+        if benign_records
+        else 0.0,
     }
 
 
@@ -202,8 +257,12 @@ if __name__ == "__main__":
     print(f"p99 latency:           {report['p99_latency_ms']:.3f} ms")
     print(f"mean latency:          {report['mean_latency_ms']:.3f} ms")
     print(f"total calls replayed:  {report['total_calls_replayed']}")
+    print(f"RATE_ANOMALY on attack corpus:  {report['attack_rate_anomaly_rate']:.1%}")
+    print(f"RATE_ANOMALY on benign corpus:  {report['benign_rate_anomaly_rate']:.1%}")
     print(
         "\nNOTE: this is an in-process replay of the real pipeline code (no Docker deployment in "
         "this environment) — see AGENTFW_CONTEXT.md's standing caveat. Latency here excludes the "
-        "real network hop to a live PEP/identity/eventstore a Docker deployment would add."
+        "real network hop to a live PEP/identity/eventstore a Docker deployment would add. "
+        "Rate-window timing is driven by each corpus record's own offset_seconds, not the real "
+        "wall clock — see this module's WHY on offset_seconds."
     )
