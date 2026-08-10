@@ -22,7 +22,12 @@ CONTAINER_ID = "deadbeefcafe1234567890abcdef"
 
 
 @pytest.fixture(autouse=True)
-def _reset_process_state():
+def _reset_process_state(monkeypatch):
+    """Quarantine membership is eventstore-persisted (pre-M3 ruling, round 3); this sandbox has
+    no live instance, and it's a distinct dependency from whatever an individual test does to
+    pep.proxy.EVENTSTORE_URL (test_log_or_deny patches that one specifically, to isolate invariant
+    §3.4 — it must not incidentally also trip the quarantine gate's own, separate eventstore
+    check). Stubbed to "nobody is quarantined" by default for every test in this file."""
     pipeline._SESSION_TAINT.clear()
     risk_scorer._SEEN_BY_AGENT.clear()
     risk_scorer._SEEN_BY_ORG.clear()
@@ -30,8 +35,9 @@ def _reset_process_state():
     risk_scorer._LAST_TOOL.clear()
     risk_scorer._SEEN_BIGRAMS.clear()
     risk_scorer._DENIAL_STREAK.clear()
-    quarantine._QUARANTINED.clear()
     quarantine._DENIAL_TIMES.clear()
+    monkeypatch.setattr(quarantine, "is_quarantined", lambda _workload_key: False)
+    monkeypatch.setattr(quarantine, "enter", lambda _workload_key, _reason: None)
     yield
 
 

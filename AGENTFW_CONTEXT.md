@@ -134,9 +134,10 @@ agentfw/
 ├── .github/workflows/ci.yml
 ├── docs/{architecture.md,threat-model.md,demo.md}
 ├── agent/{loop.py,tools.py,providers.py,prompts/,main.py}   # main.py: container entrypoint, added M1
-├── pep/{proxy.py,pipeline.py,normalize.py,bypass_proxy.py,quarantine.py,admin.py}
-│    # bypass_proxy.py: M1 gap #3, the :8081 catch-all. quarantine.py + admin.py: pre-M3 round 2,
-│    # the quarantine set + its loopback-only (127.0.0.1) manual-release surface.
+├── pep/{proxy.py,pipeline.py,normalize.py,bypass_proxy.py,quarantine.py}
+│    # bypass_proxy.py: M1 gap #3, the :8081 catch-all. quarantine.py: pre-M3 round 3, the
+│    # eventstore-backed quarantine client (state + its admin surface live on events/app.py now —
+│    # egress-net has no route from agent-net at all, not a bind-address trick on pep itself).
 ├── policy/{engine.py,compiler.py,bundles/default.yaml}
 ├── identity/{issuer.py,tokens.py}   # tokens.py split out M2: pure Ed25519 mint/verify, no
 │                                      # FastAPI/Docker-socket deps, so pep can import it standalone
@@ -169,6 +170,10 @@ services:
 ```
 
 This is the non-bypassability proof. `docker compose exec agent curl https://example.com` must fail at the network layer even with the agent fully compromised. Include a test that asserts this.
+
+*(Pre-M3 multi-agent ruling: this pattern is now applied to three agent-shaped services —
+`agent`, `finance-agent`, `support-agent` — all on `agent-net` only, all with the same
+non-bypassability property. `pep` remains the only container on both networks.)*
 
 ---
 
@@ -257,6 +262,47 @@ only via `pep/admin.py`, served on its own loopback-only (127.0.0.1) uvicorn ins
 quarantined agent — reachable to the main PEP API over agent-net — cannot release itself.
 RATE_LIMIT and REQUIRE_APPROVAL remain designed-not-implemented, documented in the README's
 "Decision lattice — implementation status" table rather than left to look finished.
+
+**Pre-M3 ruling, round 3** (four items, one of them correcting round 2):
+
+1. **Attestation hardening.** `identity/issuer.py`'s `AGENT_REGISTRY` now maps service name to
+   `RegisteredAgent(role, image_digest)`, not just role. `/attest` verifies the Docker-reported
+   image digest against the registry's expected value, not just the compose service label — a
+   label is attacker-settable via `docker run --label`; forging a digest requires producing that
+   image. A mismatch refuses and logs a security event to stdout (`agentfw.identity` logger,
+   same pattern as `pep/bypass_proxy.py`'s M1-gap-#3 precedent — identity stays agent-net-only,
+   so it can't reach the eventstore without becoming dual-homed). Unset (`EXPECTED_DIGEST_*` not
+   configured) still succeeds, loudly logged as unpinned — required by §1's fresh-clone
+   constraint, since a freshly built image's digest isn't knowable before the build finishes.
+2. **Admin-surface isolation, corrected.** Round 2's loopback-bound (127.0.0.1) admin API on the
+   PEP process itself was found, by the user's own external Docker test, to return HTTP 403 from
+   the agent container — reachable, not refused at the network layer as claimed. Root cause: a
+   plain curl from the agent container is transparently redirected through
+   `pep/bypass_proxy.py`'s :8081 listener by the `HTTP_PROXY` env var, which denies everything
+   with a 403 regardless of the real target port — a false positive for "reachable," not a
+   disproof of the loopback binding, but genuinely ambiguous and not worth arguing about. Fix:
+   quarantine list/release moved to `events/app.py`'s `/quarantine` routes — eventstore sits on
+   `egress-net` only, exactly as it always has, and `agent-net` has zero route there at all. Same
+   guarantee the whole non-bypassability story already rests on, not a new mechanism. `pep/admin.py`
+   deleted; `pep/quarantine.py` is now a thin eventstore-backed client.
+3. **Quarantine persistence.** `events/store.py` gains a `quarantine` table; state survives a PEP
+   restart because it was never PEP-process memory to begin with (a corollary of fix #2, not
+   separate work) — `pep/quarantine.py`'s `is_quarantined()` checks live rather than caching, so
+   there's nothing to reload or invalidate. Fails toward DENY (a distinct
+   `quarantine_check_unavailable` reason, not a false `AGENT_QUARANTINED`) if the eventstore is
+   unreachable — consistent with log-or-deny, not a new failure mode.
+4. **Multi-agent deployment.** `finance-agent` and `support-agent` join `docker-compose.yml` as
+   real services on `agent-net`, sharing `agent/Dockerfile`'s image, distinguished only by which
+   compose service name Docker reports at attest time (never a self-asserted role env var).
+   `AGENT_REGISTRY` now has three entries; `risk/baseline.jsonl` carries `agent_id` for all three.
+   A new tool, `agent.invoke` (`agent/tools.py`), lets an agent ask another workload to act on its
+   behalf; `policy/engine.py` gains `EastWestRule` + `evaluate_east_west()`, matching on
+   `(source_workload, dest_workload, action)` — a different question from the main rule table's
+   `(role, tool, destination)`. `policy/bundles/default.yaml`'s `east_west_rules` list is
+   deliberately empty (no role has a charter to invoke another) — default-deny applies the same
+   way it does everywhere else in this bundle. Verified: research_agent's own genuinely-valid,
+   correctly-bound token still cannot invoke finance_agent — a valid credential for the wrong
+   identity is still a denial.
 
 **M3 — The proof.** 8 attack scripts (A1 unauthorized API, A2 exfiltration, A3 restricted DB, A4 lateral movement, A5 malicious tool, A6 **indirect prompt injection**, A7 privilege escalation, A8 **HTTP_PROXY bypass attempt** — resolved M2, exercises `pep/bypass_proxy.py`); eval corpora (≥60 attack, ≥60 benign cases); scorer reporting block rate, false-positive rate, friction rate, and latency percentiles; Streamlit dashboard.
 *Done when:* `attacks/run_all.py` prints 8 blocks with reasons, and `evals/score.py` prints measured numbers.

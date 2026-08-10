@@ -18,7 +18,13 @@ import threat_intel.feed as threat_intel
 from identity.tokens import TokenInvalidError, public_key_from_b64, verify_token
 from pep.normalize import normalize_path, normalize_url
 from policy.compiler import compile_bundle
-from policy.engine import BLOCKED_DECISIONS, EXECUTABLE_DECISIONS, Decision, evaluate
+from policy.engine import (
+    BLOCKED_DECISIONS,
+    EXECUTABLE_DECISIONS,
+    Decision,
+    evaluate,
+    evaluate_east_west,
+)
 
 IDENTITY_ISSUER_URL = os.environ.get("IDENTITY_ISSUER_URL", "http://identity:8082")
 POLICY_BUNDLE_PATH = os.environ.get("POLICY_BUNDLE_PATH", "policy/bundles/default.yaml")
@@ -29,6 +35,7 @@ ACTION_MAP = {
     "db.query": "read",
     "file.read": "read",
     "email.send": "write",
+    "agent.invoke": "invoke",
 }
 
 PIPELINE_STAGES = (
@@ -95,7 +102,16 @@ def run_pipeline(
     # container binding are all genuinely valid. This is a separate question: is THIS identity
     # currently blocked, regardless of what it's asking for. "Regardless of policy" means exactly
     # that — no rule, however permissive, can override it (pep/quarantine.py: exit is manual only).
-    if quarantine.is_quarantined(workload_key):
+    try:
+        quarantined = quarantine.is_quarantined(workload_key)
+    except quarantine.QuarantineCheckUnavailable:
+        # WHY a distinct reason, not AGENT_QUARANTINED: conflating "checked and found genuinely
+        # quarantined" with "couldn't check, failing safe" would hide an eventstore outage behind
+        # a misleading label — see pep/quarantine.py's QuarantineCheckUnavailable docstring.
+        return _deny_early(
+            "quarantine_check_unavailable", "QUARANTINE_CHECK_FAILED", agent_key, latency
+        )
+    if quarantined:
         return _deny_early("AGENT_QUARANTINED", "QUARANTINE_DENY", agent_key, latency)
 
     # --- Stage 2: request normalization ---
@@ -108,11 +124,25 @@ def run_pipeline(
     latency["normalize"] = _elapsed_ms(t0)
 
     # --- Stage 3: policy evaluation ---
+    # WHY "agent.invoke" branches to a different evaluator entirely, not just a different rule
+    # table: it's asking a different question. Every other tool asks "may THIS ROLE reach THIS
+    # DESTINATION" — agent.invoke asks "may THIS WORKLOAD reach THAT WORKLOAD," which
+    # policy/engine.py's evaluate() has no vocabulary for (its rules match role/tool/destination,
+    # not source/dest workload pairs). A valid token proves who's asking; it says nothing about
+    # who they're allowed to ask (AGENTFW_CONTEXT.md pre-M3 multi-agent ruling).
     t0 = time.perf_counter()
     session_taint = "tainted" if _SESSION_TAINT.get(session_id, False) else "clean"
-    policy_result = evaluate(
-        BUNDLE, role=role, tool=tool, fqdn=fqdn, resource=resource, session_taint=session_taint
-    )
+    if tool == "agent.invoke":
+        policy_result = evaluate_east_west(
+            BUNDLE,
+            source_workload=workload_key,
+            dest_workload=str(arguments.get("target_service", "")),
+            action="invoke",
+        )
+    else:
+        policy_result = evaluate(
+            BUNDLE, role=role, tool=tool, fqdn=fqdn, resource=resource, session_taint=session_taint
+        )
     latency["policy"] = _elapsed_ms(t0)
 
     # --- Stage 4: threat intel ---
@@ -280,6 +310,8 @@ def extract_target(tool: str, arguments: dict[str, Any]) -> tuple[str | None, st
         return None, arguments.get("path")
     if tool == "email.send":
         return None, arguments.get("to")
+    if tool == "agent.invoke":
+        return None, arguments.get("target_service")
     return None, None
 
 

@@ -84,11 +84,32 @@ class Rule:
 
 
 @dataclass(frozen=True)
+class EastWestRule:
+    """A rule about agent-to-agent calls, not agent-to-destination ones — see evaluate_east_west().
+    Keyed on workload (the compose service name / identity/issuer.py's "service" claim), not role:
+    two roles could in principle share a workload, or one role run as several named workloads, and
+    east-west policy is a statement about *which deployed identities* may reach each other, not
+    about which roles exist in the abstract."""
+
+    id: str
+    priority: int
+    source_workload: str  # "*" matches any source
+    dest_workload: str  # "*" matches any destination
+    action: str
+    effect: Decision
+
+
+@dataclass(frozen=True)
 class Bundle:
     version: str
     not_valid_after: str
     fail_safe_after: int
     rules: tuple[Rule, ...]
+    # WHY defaulted to empty, not omitted from the schema: an empty tuple is the bundle explicitly
+    # saying "no agent has a charter to call another agent" (default-deny still applies with zero
+    # rules, same as the main rule table) — see policy/bundles/default.yaml's own comment on why
+    # it's empty by design, not an unfinished section.
+    east_west_rules: tuple[EastWestRule, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -111,12 +132,14 @@ def load_bundle(path: str | Path) -> Bundle:
     """
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     rules = tuple(_parse_rule(r) for r in raw["rules"])
+    east_west_rules = tuple(_parse_east_west_rule(r) for r in raw.get("east_west_rules") or [])
     meta = raw["metadata"]
     return Bundle(
         version=str(meta["version"]),
         not_valid_after=str(meta["not_valid_after"]),
         fail_safe_after=int(meta["fail_safe_after"]),
         rules=rules,
+        east_west_rules=east_west_rules,
     )
 
 
@@ -139,6 +162,55 @@ def _parse_rule(raw: dict[str, Any]) -> Rule:
         inspect=bool(raw.get("inspect", False)),
         reason=str(raw.get("reason", "")),
     )
+
+
+def _parse_east_west_rule(raw: dict[str, Any]) -> EastWestRule:
+    effect = raw["effect"]
+    if effect not in ("ALLOW", "DENY"):
+        raise ValueError(
+            f"east-west rule {raw.get('id')!r}: effect must be ALLOW or DENY, got {effect!r}"
+        )
+    return EastWestRule(
+        id=raw["id"],
+        priority=int(raw["priority"]),
+        source_workload=raw["source_workload"],
+        dest_workload=raw["dest_workload"],
+        action=raw["action"],
+        effect=Decision[effect],
+    )
+
+
+def evaluate_east_west(
+    bundle: Bundle, *, source_workload: str, dest_workload: str, action: str
+) -> EvalResult:
+    """Evaluate one agent-to-agent call. Same resolution order as evaluate(): explicit DENY >
+    explicit ALLOW > implicit DENY, priority then lexicographic-id tie-break — a second instance
+    of the same rule, not a different one, because east-west calls deserve the identical
+    determinism guarantee ordinary policy calls get (AGENTFW_CONTEXT.md §3.3)."""
+    candidates = [
+        r
+        for r in bundle.east_west_rules
+        if r.action == action
+        and (r.source_workload in ("*", source_workload))
+        and (r.dest_workload in ("*", dest_workload))
+    ]
+    deny = [r for r in candidates if r.effect == Decision.DENY]
+    allow = [r for r in candidates if r.effect == Decision.ALLOW]
+
+    if deny:
+        winner = _pick_ew_winner(deny)
+        return EvalResult(Decision.DENY, winner.id, "matched_explicit_east_west_deny", None, False)
+    if not allow:
+        return EvalResult(
+            Decision.DENY, "DEFAULT_DENY_EAST_WEST", "no_matching_east_west_rule", None, False
+        )
+
+    winner = _pick_ew_winner(allow)
+    return EvalResult(Decision.ALLOW, winner.id, "matched_explicit_east_west_allow", None, False)
+
+
+def _pick_ew_winner(rules: list[EastWestRule]) -> EastWestRule:
+    return min(rules, key=lambda r: (-r.priority, r.id))
 
 
 def evaluate(

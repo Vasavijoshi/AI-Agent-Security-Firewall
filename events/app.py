@@ -12,12 +12,20 @@ pep/pipeline.py (logic) split already used elsewhere in this repo.
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
-from events.store import EventWriteError, read_all_events, write_event
+from events.store import (
+    EventWriteError,
+    quarantine_enter,
+    quarantine_list,
+    quarantine_release,
+    read_all_events,
+    write_event,
+)
 
 DB_PATH = os.environ.get("EVENTSTORE_DB_PATH", "/data/events.db")
 
@@ -45,3 +53,32 @@ def post_event(event: dict[str, Any]) -> dict[str, str]:
 @app.get("/events")
 def get_events() -> JSONResponse:
     return JSONResponse(content=read_all_events(DB_PATH))
+
+
+# --- quarantine admin surface (pre-M3 ruling, round 3) ---
+# WHY these live here, on eventstore, and not on pep: this is where quarantine state is now
+# durably persisted (a PEP restart must not clear it — see pep/quarantine.py's WHY), and eventstore
+# sits on egress-net only, exactly like it always has. agent-net has zero route to egress-net —
+# not a bind-address trick, the same network split the whole project's non-bypassability story
+# already rests on. A prior version of this admin surface lived on the PEP container itself, bound
+# to 127.0.0.1 — external verification showed that test going through pep's bypass-catch listener
+# (HTTP_PROXY intercepts a plain curl before it ever reaches the target port) and getting back a
+# misleading 403 that looked like "reachable but denied" instead of "not on this network at all."
+# Moving the admin surface to a container agent-net cannot reach *at all* removes that ambiguity
+# structurally instead of arguing about what a curl through a proxy actually proves.
+@app.get("/quarantine")
+def list_quarantined() -> dict[str, str]:
+    return quarantine_list(DB_PATH)
+
+
+@app.post("/quarantine/{agent_id}")
+def enter_quarantine(agent_id: str, body: dict[str, str]) -> dict[str, str]:
+    quarantine_enter(agent_id, body["reason"], datetime.now(UTC).isoformat(), DB_PATH)
+    return {"status": "entered", "agent_id": agent_id}
+
+
+@app.delete("/quarantine/{agent_id}")
+def release_quarantine(agent_id: str) -> dict[str, str]:
+    if not quarantine_release(agent_id, DB_PATH):
+        raise HTTPException(status_code=404, detail=f"{agent_id!r} is not quarantined")
+    return {"status": "released", "agent_id": agent_id}

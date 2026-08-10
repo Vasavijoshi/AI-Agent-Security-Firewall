@@ -1,13 +1,15 @@
-"""Tests for pep/quarantine.py and its wiring into pep/pipeline.py + pep/admin.py (pre-M3 ruling,
-gap #3): entry triggers (risk CRITICAL, threat-intel hit, >=5 denials/60s), the absolute gate, and
-manual-only release.
+"""Tests for pep/quarantine.py (now eventstore-persisted — pre-M3 ruling, round 3) and its wiring
+into pep/pipeline.py: entry triggers (risk CRITICAL, threat-intel hit, >=5 denials/60s), the
+absolute gate, persistence across a simulated PEP restart, and fail-safe behavior when the
+eventstore itself is unreachable.
 """
 
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
+import httpx
+import pytest
 
-import pep.admin as admin
+import events.store as event_store
 import pep.pipeline as pipeline
 import pep.quarantine as quarantine
 import risk.scorer as risk_scorer
@@ -26,7 +28,6 @@ def _reset_state():
     risk_scorer._LAST_TOOL.clear()
     risk_scorer._SEEN_BIGRAMS.clear()
     risk_scorer._DENIAL_STREAK.clear()
-    quarantine._QUARANTINED.clear()
     quarantine._DENIAL_TIMES.clear()
 
 
@@ -45,12 +46,53 @@ def _token(keypair, role: str, service: str = "agent", ip: str = PEER_IP) -> str
     )
 
 
+class _FakeResponse:
+    def __init__(self, status_code: int, json_data):
+        self.status_code = status_code
+        self._json = json_data
+
+    def json(self):
+        return self._json
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("error", request=None, response=self)  # type: ignore[arg-type]
+
+
+@pytest.fixture
+def fake_eventstore(monkeypatch, tmp_path):
+    """Substitutes only the network boundary — GET/POST/DELETE against pep/quarantine.py's own
+    httpx calls dispatch straight to events/store.py's real SQLite functions on a scratch file.
+    This exercises the real persistence layer (not a test double standing in for it) without
+    needing a live eventstore process."""
+    db_path = str(tmp_path / "events.db")
+
+    def fake_get(url, timeout=None):
+        assert url.endswith("/quarantine")
+        return _FakeResponse(200, event_store.quarantine_list(db_path))
+
+    def fake_post(url, json=None, timeout=None):
+        agent_id = url.rsplit("/", 1)[-1]
+        event_store.quarantine_enter(agent_id, json["reason"], "2026-01-01T00:00:00Z", db_path)
+        return _FakeResponse(200, {"status": "entered"})
+
+    def fake_delete(url, timeout=None):
+        agent_id = url.rsplit("/", 1)[-1]
+        released = event_store.quarantine_release(agent_id, db_path)
+        return _FakeResponse(200 if released else 404, {})
+
+    monkeypatch.setattr(quarantine.httpx, "get", fake_get)
+    monkeypatch.setattr(quarantine.httpx, "post", fake_post)
+    monkeypatch.setattr(quarantine.httpx, "delete", fake_delete)
+    return db_path
+
+
 # =====================================================================================
-# pep/quarantine.py — unit-level
+# pep/quarantine.py — unit-level, against the fake eventstore
 # =====================================================================================
 
 
-def test_enter_and_release_round_trip():
+def test_enter_and_release_round_trip(fake_eventstore):
     _reset_state()
     assert not quarantine.is_quarantined("agent")
     quarantine.enter("agent", "test reason")
@@ -60,12 +102,12 @@ def test_enter_and_release_round_trip():
     assert not quarantine.is_quarantined("agent")
 
 
-def test_release_on_a_non_quarantined_agent_returns_false():
+def test_release_on_a_non_quarantined_agent_returns_false(fake_eventstore):
     _reset_state()
     assert quarantine.release("nobody") is False
 
 
-def test_enter_is_idempotent_keeps_original_reason():
+def test_enter_is_idempotent_keeps_original_reason(fake_eventstore):
     _reset_state()
     quarantine.enter("agent", "first reason")
     quarantine.enter("agent", "second reason")
@@ -79,12 +121,34 @@ def test_record_denial_crosses_threshold_at_five_within_the_window():
     assert quarantine.record_denial("agent") is True
 
 
+def test_quarantine_survives_a_simulated_pep_restart(fake_eventstore):
+    """The item-4 property, made concrete: quarantine membership lives in events/store.py's SQLite
+    file, not in any PEP-process-local variable. "Restarting the PEP" is simulated here by
+    clearing every other module-level cache this test suite knows about and re-checking — there is
+    deliberately no `_QUARANTINED` dict left to clear, because there's nothing left that a restart
+    could lose."""
+    quarantine.enter("agent", "risk score reached CRITICAL band")
+    assert quarantine.is_quarantined("agent")
+
+    _reset_state()  # simulates process restart: clears every other piece of in-memory state
+    assert quarantine.is_quarantined("agent"), "quarantine did not survive the simulated restart"
+
+
+def test_is_quarantined_fails_safe_when_the_eventstore_is_unreachable(monkeypatch):
+    def _boom(*_args, **_kwargs):
+        raise httpx.HTTPError("simulated eventstore outage")
+
+    monkeypatch.setattr(quarantine.httpx, "get", _boom)
+    with pytest.raises(quarantine.QuarantineCheckUnavailable):
+        quarantine.is_quarantined("agent")
+
+
 # =====================================================================================
 # Wired into pep/pipeline.py
 # =====================================================================================
 
 
-def test_threat_intel_hit_triggers_quarantine_and_blocks_the_next_call():
+def test_threat_intel_hit_triggers_quarantine_and_blocks_the_next_call(fake_eventstore):
     _reset_state()
     keypair = generate_keypair()
     pipeline._ISSUER_PUBLIC_KEY = keypair[1]
@@ -113,7 +177,7 @@ def test_threat_intel_hit_triggers_quarantine_and_blocks_the_next_call():
     pipeline._ISSUER_PUBLIC_KEY = None
 
 
-def test_risk_critical_band_triggers_quarantine(monkeypatch):
+def test_risk_critical_band_triggers_quarantine(monkeypatch, fake_eventstore):
     """Isolated from the other two triggers deliberately: stacking real factors to 75+ without
     also incidentally causing a threat-intel hit is fragile to construct and fragile to keep
     passing as risk/scorer.py's factor weights evolve. Forcing the score directly tests exactly
@@ -145,7 +209,7 @@ def test_risk_critical_band_triggers_quarantine(monkeypatch):
     pipeline._ISSUER_PUBLIC_KEY = None
 
 
-def test_five_denials_in_60s_triggers_quarantine():
+def test_five_denials_in_60s_triggers_quarantine(fake_eventstore):
     _reset_state()
     keypair = generate_keypair()
     pipeline._ISSUER_PUBLIC_KEY = keypair[1]
@@ -176,7 +240,7 @@ def test_five_denials_in_60s_triggers_quarantine():
     pipeline._ISSUER_PUBLIC_KEY = None
 
 
-def test_quarantine_applies_regardless_of_policy():
+def test_quarantine_applies_regardless_of_policy(fake_eventstore):
     """ "Regardless of policy" is the whole point — even a request that would otherwise be a clean
     ALLOW must be denied once the agent is quarantined."""
     _reset_state()
@@ -197,7 +261,7 @@ def test_quarantine_applies_regardless_of_policy():
     pipeline._ISSUER_PUBLIC_KEY = None
 
 
-def test_release_restores_normal_service():
+def test_release_restores_normal_service(fake_eventstore):
     _reset_state()
     keypair = generate_keypair()
     pipeline._ISSUER_PUBLIC_KEY = keypair[1]
@@ -226,36 +290,27 @@ def test_release_restores_normal_service():
     pipeline._ISSUER_PUBLIC_KEY = None
 
 
-# =====================================================================================
-# pep/admin.py — the manual-only release surface
-# =====================================================================================
-
-
-def test_admin_app_lists_and_releases():
+def test_pipeline_denies_with_a_distinct_reason_when_the_eventstore_is_unreachable(monkeypatch):
+    """The quarantine gate's own fail-safe path must be distinguishable in the event log from a
+    real AGENT_QUARANTINED verdict — see QuarantineCheckUnavailable's docstring."""
     _reset_state()
-    quarantine.enter("agent", "test reason")
+    keypair = generate_keypair()
+    pipeline._ISSUER_PUBLIC_KEY = keypair[1]
+    token = _token(keypair, "research_agent")
 
-    client = TestClient(admin.admin_app)
-    listed = client.get("/admin/quarantine").json()
-    assert listed == {"agent": "test reason"}
+    def _boom(*_args, **_kwargs):
+        raise httpx.HTTPError("simulated eventstore outage")
 
-    response = client.post("/admin/quarantine/agent/release")
-    assert response.status_code == 200
-    assert not quarantine.is_quarantined("agent")
+    monkeypatch.setattr(quarantine.httpx, "get", _boom)
 
-
-def test_admin_release_on_unknown_agent_is_404():
-    _reset_state()
-    client = TestClient(admin.admin_app)
-    response = client.post("/admin/quarantine/nobody/release")
-    assert response.status_code == 404
-
-
-def test_admin_routes_are_not_reachable_via_the_main_pep_app():
-    """The security property this whole feature depends on: a quarantined (possibly compromised)
-    agent can reach the main PEP app over agent-net, so the release endpoint must not exist there
-    at all — only on the separate, loopback-bound admin_app (pep/proxy.py's lifespan)."""
-    import pep.proxy as proxy
-
-    main_app_paths = {route.path for route in proxy.app.routes}
-    assert not any(path.startswith("/admin") for path in main_app_paths)
+    result = pipeline.run_pipeline(
+        token=token,
+        peer_ip=PEER_IP,
+        session_id="s1",
+        tool="http.get",
+        arguments={"url": "https://api.trusted-news.com/x"},
+    )
+    assert result.decision == Decision.DENY
+    assert result.reason == "quarantine_check_unavailable"
+    assert result.reason != "AGENT_QUARANTINED"
+    pipeline._ISSUER_PUBLIC_KEY = None

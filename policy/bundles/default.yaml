@@ -180,3 +180,19 @@ rules:
     tool: [file.read]
     effect: DENY
     reason: finance_agent has no charter for local file access
+
+# East-west rules (pre-M3 multi-agent ruling): govern agent-to-agent calls (tool "agent.invoke"),
+# a different matching dimension than the `rules:` table above — keyed on (source_workload,
+# dest_workload, action), not (role, tool, destination). See policy/engine.py's evaluate_east_west().
+#
+# WHY this list is empty, not "not yet written": none of the four roles in this bundle has a
+# legitimate reason to invoke another agent's tools — research_agent reads public sources,
+# finance_agent posts to one ERP, support_agent reads customer records and emails a helpdesk
+# address, admin_agent reaches its own console. Agent-to-agent delegation isn't part of any of
+# those charters. An empty east_west_rules list means every cross-agent call hits implicit
+# DEFAULT_DENY_EAST_WEST — the same default-deny-by-construction the main rule table already
+# relies on, applied to a second dimension. This is what AGENTFW_CONTEXT.md's A4 (lateral
+# movement) scenario demonstrates: research_agent presenting its own genuinely valid token still
+# cannot reach finance_agent, because no rule anywhere grants it — not because of a missing
+# credential, but because nothing here says it may.
+east_west_rules: []

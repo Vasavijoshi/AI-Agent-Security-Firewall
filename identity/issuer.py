@@ -13,11 +13,23 @@ a shared secret.
 # Read-only limits it to inspect-only calls (this module never issues a write/control call against
 # the socket). Accepted for this project's scope because the alternative — a Kubernetes
 # ServiceAccount-style attestor — is exactly the infrastructure AGENTFW_CONTEXT.md §1 rules out.
+#
+# WHY the service label alone was never enough (pre-M3 hardening): `docker run --label
+# com.docker.compose.service=agent` is something anyone who can start a container can set —
+# forging it costs nothing. Forging the *image digest* that the Docker API reports for a running
+# container requires producing an image that actually hashes to the expected value, which is a
+# different, much harder problem. Verifying both is what turns "which label did you set" into
+# "which image are you actually running."
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -27,12 +39,50 @@ from identity.tokens import generate_keypair, mint_token, public_key_to_b64
 
 DOCKER_SOCKET = os.environ.get("DOCKER_SOCKET", "/var/run/docker.sock")
 
-# compose service name -> role. WHY only one entry has a live container: docker-compose.yml
-# defines a single agent service ("agent"). The other three roles in policy/bundles/default.yaml
-# are valid, policy-authored roles with no deployed agent yet — this registry maps what's actually
-# reachable via the Docker API, not the full aspirational role set.
-AGENT_REGISTRY: dict[str, str] = {
-    "agent": "research_agent",
+# WHY stdout, not a durable eventstore write: identity is on agent-net only (it never needs the
+# internet, and giving it a route to eventstore on egress-net would mean touching the network
+# topology the rest of this project's non-bypassability story rests on, for one log line). This
+# mirrors pep/bypass_proxy.py's M1-gap-#3 precedent exactly: `docker compose logs identity` is the
+# loud, attributable trail for attestation denials, at the cost of not showing up in the
+# eventstore/dashboard's durable history. A known, deliberate scope line, not an oversight.
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+event_logger = logging.getLogger("agentfw.identity")
+
+
+@dataclass(frozen=True)
+class RegisteredAgent:
+    role: str
+    image_digest: str  # expected `ImageID` from the Docker API; "" means unpinned (see below)
+
+
+def _expected_digest(env_var: str) -> str:
+    return os.environ.get(env_var, "")
+
+
+# compose service name -> (role, expected image digest). WHY only "agent" has ever had a live
+# container: docker-compose.yml originally defined a single agent service. Pre-M3 multi-agent adds
+# finance-agent and support-agent as real services (see docker-compose.yml) sharing this same
+# image, distinguished only by which compose service name Docker reports them under — which is
+# exactly the fact this registry, and the digest check below, key off of.
+#
+# WHY image_digest defaults to "" (unpinned) rather than refusing when unset: AGENTFW_CONTEXT.md
+# §1 is a hard constraint — a fresh `git clone && docker compose up` must work with zero manual
+# configuration. A freshly built image's digest isn't knowable before the build finishes, so a
+# fresh clone has nothing to pin against yet. Unset means "digest pinning not configured for this
+# service" (logged loudly on every attest — see _attest_denied below), not "refuse everything until
+# someone configures it," which would break the one acceptance test this whole project is
+# optimized around. Set EXPECTED_DIGEST_AGENT / _FINANCE_AGENT / _SUPPORT_AGENT (e.g. from `docker
+# inspect <image> -f '{{.Id}}'` after building) to get the real protection.
+AGENT_REGISTRY: dict[str, RegisteredAgent] = {
+    "agent": RegisteredAgent(
+        role="research_agent", image_digest=_expected_digest("EXPECTED_DIGEST_AGENT")
+    ),
+    "finance-agent": RegisteredAgent(
+        role="finance_agent", image_digest=_expected_digest("EXPECTED_DIGEST_FINANCE_AGENT")
+    ),
+    "support-agent": RegisteredAgent(
+        role="support_agent", image_digest=_expected_digest("EXPECTED_DIGEST_SUPPORT_AGENT")
+    ),
 }
 
 _PRIVATE_KEY, _PUBLIC_KEY = generate_keypair()
@@ -63,13 +113,42 @@ async def attest(request: Request) -> dict[str, str]:
 
     info = await _lookup_caller_container(source_ip)
     if info is None:
+        _log_attestation_denial("no_container_match", source_ip, None)
         raise HTTPException(status_code=403, detail="caller's container could not be identified")
-    role = AGENT_REGISTRY.get(info["service"])
-    if role is None:
+
+    registered = AGENT_REGISTRY.get(info["service"])
+    if registered is None:
+        _log_attestation_denial(
+            f"service {info['service']!r} not in AGENT_REGISTRY", source_ip, info
+        )
         raise HTTPException(
             status_code=403, detail=f"service {info['service']!r} is not in the agent registry"
         )
 
+    # --- image digest verification: the actual hardening (see the module WHY block) ---
+    if registered.image_digest and info["image_digest"] != registered.image_digest:
+        _log_attestation_denial(
+            f"image digest mismatch for service {info['service']!r}: expected "
+            f"{registered.image_digest!r}, got {info['image_digest']!r}",
+            source_ip,
+            info,
+        )
+        raise HTTPException(status_code=403, detail="attestation failed: image digest mismatch")
+    if not registered.image_digest:
+        # WHY this is its own branch, logged but not refused: unpinned is the honest, expected
+        # state for a fresh clone (see AGENT_REGISTRY's WHY) — surfaced loudly so it's never
+        # mistaken for real digest protection being in effect, without breaking `docker compose up`.
+        event_logger.warning(
+            json.dumps(
+                {
+                    "event": "attestation_unpinned",
+                    "service": info["service"],
+                    "note": "no EXPECTED_DIGEST_* configured — running unverified",
+                }
+            )
+        )
+
+    role = registered.role
     spiffe_id = f"spiffe://agentfw.internal/ns/{role}/agent/{info['container_id'][:12]}"
     token = mint_token(
         {
@@ -93,6 +172,33 @@ async def attest(request: Request) -> dict[str, str]:
         _PRIVATE_KEY,
     )
     return {"token": token}
+
+
+def _log_attestation_denial(reason: str, source_ip: str, info: dict[str, str] | None) -> None:
+    """Loud and attributable, matching pep/bypass_proxy.py's precedent — see the module WHY block
+    for why this goes to stdout rather than the durable eventstore."""
+    event = {
+        "schema_version": "1.0",
+        "timestamp": datetime.now(UTC).isoformat(),
+        "trace_id": str(uuid.uuid4()),
+        "session_id": "unknown",
+        "agent_id": (info or {}).get("service") or "unknown",
+        "role": "unknown",
+        "tool": "identity.attest",
+        "action": "attest",
+        "destination": {"fqdn": None, "ip": source_ip, "port": None, "protocol": None},
+        "resource": (info or {}).get("container_id"),
+        "data_classification": "internal",
+        "session_taint": "clean",
+        "risk_score": 0,
+        "risk_factors": [],
+        "policy_id": "ATTESTATION_DENY",
+        "policy_bundle_version": "n/a",
+        "decision": "DENY",
+        "reason": reason,
+        "latency_ms": {},
+    }
+    event_logger.info(json.dumps(event))
 
 
 async def _lookup_caller_container(source_ip: str) -> dict[str, str] | None:

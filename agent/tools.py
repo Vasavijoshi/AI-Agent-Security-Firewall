@@ -1,5 +1,5 @@
-"""Tool schemas and dispatch for http.get, http.post, db.query, file.read, email.send — all routed
-through the PEP."""
+"""Tool schemas and dispatch for http.get, http.post, db.query, file.read, email.send, and
+agent.invoke — all routed through the PEP."""
 
 from __future__ import annotations
 
@@ -65,6 +65,24 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {"to": {"type": "string"}, "body": {"type": "string"}},
             "required": ["to", "body"],
+        },
+    },
+    {
+        "name": "agent.invoke",
+        # WHY this tool exists (pre-M3 multi-agent ruling): every other tool reaches a
+        # destination; this one reaches *another agent*. Policy governs it on a different
+        # dimension — (source_workload, dest_workload, action), not (role, tool, destination) —
+        # see policy/engine.py's evaluate_east_west(). A valid token proves who's asking; it says
+        # nothing about who they're allowed to ask.
+        "description": "Ask another agent workload to perform a tool call.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target_service": {"type": "string"},
+                "tool": {"type": "string"},
+                "arguments": {"type": "object"},
+            },
+            "required": ["target_service", "tool", "arguments"],
         },
     },
 ]

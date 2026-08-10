@@ -24,11 +24,12 @@ PEER_IP = "10.0.1.5"
 
 
 @pytest.fixture(autouse=True)
-def _reset_process_state():
-    """Pipeline, risk-scorer, and quarantine state are all process-lifetime, in-memory (documented
-    in each module). Tests must not leak taint/behavioral/quarantine state into each other — a
-    threat-intel-hit test earlier in the file would otherwise get every later test in this same
-    module denied with AGENT_QUARANTINED, since they all share CONTAINER_ID as their identity."""
+def _reset_process_state(monkeypatch):
+    """Pipeline and risk-scorer behavioral state are process-lifetime, in-memory (documented in
+    each module) — cleared between tests so nothing leaks. Quarantine membership is now
+    eventstore-persisted (pre-M3 ruling, round 3), which this sandbox has no live instance of;
+    stub it to "nobody is quarantined" so tests unrelated to quarantine aren't broken by that
+    dependency. tests/test_quarantine.py exercises the real persistence layer directly."""
     pipeline._SESSION_TAINT.clear()
     risk_scorer._SEEN_BY_AGENT.clear()
     risk_scorer._SEEN_BY_ORG.clear()
@@ -36,8 +37,9 @@ def _reset_process_state():
     risk_scorer._LAST_TOOL.clear()
     risk_scorer._SEEN_BIGRAMS.clear()
     risk_scorer._DENIAL_STREAK.clear()
-    quarantine._QUARANTINED.clear()
     quarantine._DENIAL_TIMES.clear()
+    monkeypatch.setattr(quarantine, "is_quarantined", lambda _workload_key: False)
+    monkeypatch.setattr(quarantine, "enter", lambda _workload_key, _reason: None)
     yield
 
 

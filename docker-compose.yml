@@ -20,6 +20,12 @@ services:
     networks: [agent-net] # WHY agent-net only: attestation and token issuance never need the
     # internet — only the agent (to call /attest) and the pep (to fetch the public key) need to
     # reach this service, and both already live on agent-net.
+    environment:
+      # Optional image-digest pins — see .env.example. Unset by default so a fresh clone still
+      # attests (unpinned, loudly logged) rather than refusing everything with nothing configured.
+      EXPECTED_DIGEST_AGENT: ${EXPECTED_DIGEST_AGENT:-}
+      EXPECTED_DIGEST_FINANCE_AGENT: ${EXPECTED_DIGEST_FINANCE_AGENT:-}
+      EXPECTED_DIGEST_SUPPORT_AGENT: ${EXPECTED_DIGEST_SUPPORT_AGENT:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       # WHY read-only, and why this is a real trade-off, not a free lunch: see the `# WHY:` block
@@ -65,6 +71,52 @@ services:
     # scripted scenario and exits — it is expected to show Exited(0), not stay Up. Read its
     # output with `docker compose logs agent`.
 
+  # --- finance-agent, support-agent (pre-M3 multi-agent ruling) ---
+  # WHY these are separate services sharing agent/Dockerfile's image, not one service with a role
+  # env var: identity/issuer.py's AGENT_REGISTRY maps *compose service name* to role — a container
+  # cannot claim a role via its own environment (that would be exactly the self-asserted identity
+  # AGENTFW_CONTEXT.md §2 rules out). Which agent this is is a fact about which service Docker
+  # says it's running as, discovered via the Docker API at attest time, not configured here.
+  # AGENTFW_SCENARIO differs per service only to give each one something true to its own charter
+  # to do — it has no bearing on identity or authorization.
+  finance-agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    networks: [agent-net]
+    environment:
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENTFW_SCENARIO: ${FINANCE_AGENT_SCENARIO:-finance_allowed_call}
+      PEP_URL: http://pep:8080
+      IDENTITY_ISSUER_URL: http://identity:8082
+      HTTP_PROXY: http://pep:8081
+      HTTPS_PROXY: http://pep:8081
+    depends_on:
+      pep:
+        condition: service_healthy
+      identity:
+        condition: service_healthy
+
+  support-agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    networks: [agent-net]
+    environment:
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENTFW_SCENARIO: ${SUPPORT_AGENT_SCENARIO:-support_allowed_call}
+      PEP_URL: http://pep:8080
+      IDENTITY_ISSUER_URL: http://identity:8082
+      HTTP_PROXY: http://pep:8081
+      HTTPS_PROXY: http://pep:8081
+    depends_on:
+      pep:
+        condition: service_healthy
+      identity:
+        condition: service_healthy
+
   pep:
     build:
       context: .
@@ -75,9 +127,6 @@ services:
       EVENTSTORE_URL: http://eventstore:8090
       IDENTITY_ISSUER_URL: http://identity:8082
       POLICY_BUNDLE_PATH: /app/policy/bundles/default.yaml
-      # ADMIN_PORT (default 8079): quarantine list/release, bound to 127.0.0.1 inside this
-      # container (pep/admin.py) — deliberately not published here. Reach it with
-      # `docker compose exec pep curl http://localhost:8079/admin/quarantine`.
     depends_on:
       eventstore:
         condition: service_healthy
@@ -100,7 +149,10 @@ services:
     build:
       context: .
       dockerfile: events/Dockerfile
-    networks: [egress-net]
+    networks: [egress-net] # WHY this is also now the quarantine admin surface (events/app.py's
+    # /quarantine routes): agent-net has zero route here — genuinely unreachable from the agent,
+    # not just permission-checked. Release with, e.g.:
+    #   docker compose exec pep curl -X DELETE http://eventstore:8090/quarantine/agent
     volumes:
       - eventstore-data:/data
     environment:

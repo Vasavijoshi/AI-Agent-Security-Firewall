@@ -175,12 +175,17 @@ Known, documented simplifications — each named at its point of use rather than
   + `RiskScorer.warm_up()` seed this from ~200 replayed benign events at startup, including
   per-agent state for the one identity with a real `AGENT_REGISTRY` entry, so a freshly booted
   stack doesn't score every first call as anomalous purely from cold-start novelty.
-- **QUARANTINE is implemented**: entry is automatic (risk CRITICAL band, a threat-intel hit, or
-  5+ denials in 60s — `pep/pipeline.py`), exit is manual only via a loopback-only admin endpoint
-  (`pep/admin.py`, `pep/quarantine.py`) — never a timer. **RATE_LIMIT and REQUIRE_APPROVAL remain
-  designed, not implemented**: RATE_LIMIT executes without actually throttling, REQUIRE_APPROVAL
-  doesn't execute but has no approval workflow to eventually let it through either. See the
-  README's "Decision lattice — implementation status" table for the full breakdown.
+- **QUARANTINE is implemented and persisted**: entry is automatic (risk CRITICAL band, a
+  threat-intel hit, or 5+ denials in 60s — `pep/pipeline.py`), state lives on the eventstore
+  (`events/store.py`'s `quarantine` table, `events/app.py`'s `/quarantine` routes) so a PEP
+  restart doesn't clear it. Exit is manual only, by calling that same eventstore endpoint — never
+  a timer. That admin surface is reachable only from egress-net (`pep/quarantine.py`); agent-net
+  has no route there at all, the same guarantee the project's non-bypassability story already
+  rests on, not a bind-address trick on the PEP process itself (an earlier version tried that —
+  external verification found it ambiguous, see `pep/quarantine.py`'s WHY). **RATE_LIMIT and
+  REQUIRE_APPROVAL remain designed, not implemented**: RATE_LIMIT executes without actually
+  throttling, REQUIRE_APPROVAL doesn't execute but has no approval workflow to eventually let it
+  through either. See the README's "Decision lattice — implementation status" table.
 - **The bypass-catch listener** (`pep/bypass_proxy.py`, port 8081) denies every HTTP_PROXY/
   HTTPS_PROXY-directed request outright and logs `decision=DENY reason=BYPASS_ATTEMPTED` — both to
   the eventstore and to the PEP's own stdout, so `docker compose logs pep` shows it even if the

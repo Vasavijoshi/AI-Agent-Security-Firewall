@@ -43,56 +43,56 @@
 {"role": "admin_agent", "tool": "db.query", "destination_key": "audit_log"}
 {"role": "admin_agent", "tool": "db.query", "destination_key": "customers"}
 {"role": "admin_agent", "tool": "db.query", "destination_key": "customers"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
-{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "invoices", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "db.query", "destination_key": "ledger", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
+{"role": "finance_agent", "tool": "http.post", "destination_key": "api.approved-erp.com", "agent_id": "finance-agent"}
 {"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
 {"role": "research_agent", "tool": "http.get", "destination_key": "api.trusted-news.com", "agent_id": "agent"}
 {"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org", "agent_id": "agent"}
@@ -148,53 +148,53 @@
 {"role": "research_agent", "tool": "http.get", "destination_key": "physics.arxiv.org", "agent_id": "agent"}
 {"role": "research_agent", "tool": "http.get", "destination_key": "bio.arxiv.org", "agent_id": "agent"}
 {"role": "research_agent", "tool": "http.get", "destination_key": "cs.arxiv.org", "agent_id": "agent"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "db.query", "destination_key": "customers"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "db.query", "destination_key": "customers"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "db.query", "destination_key": "customers"}
-{"role": "support_agent", "tool": "db.query", "destination_key": "customers"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "db.query", "destination_key": "customers"}
-{"role": "support_agent", "tool": "db.query", "destination_key": "customers"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "db.query", "destination_key": "customers"}
-{"role": "support_agent", "tool": "db.query", "destination_key": "customers"}
-{"role": "support_agent", "tool": "db.query", "destination_key": "customers"}
-{"role": "support_agent", "tool": "db.query", "destination_key": "customers"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "db.query", "destination_key": "customers"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "db.query", "destination_key": "customers"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "db.query", "destination_key": "customers"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "db.query", "destination_key": "customers"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com"}
-{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "db.query", "destination_key": "customers", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "db.query", "destination_key": "customers", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "db.query", "destination_key": "customers", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "db.query", "destination_key": "customers", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "db.query", "destination_key": "customers", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "db.query", "destination_key": "customers", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "db.query", "destination_key": "customers", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "db.query", "destination_key": "customers", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "db.query", "destination_key": "customers", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "db.query", "destination_key": "customers", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "db.query", "destination_key": "customers", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "db.query", "destination_key": "customers", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "db.query", "destination_key": "customers", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "db.query", "destination_key": "customers", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "reply@approved-helpdesk.com", "agent_id": "support-agent"}
+{"role": "support_agent", "tool": "email.send", "destination_key": "support@approved-helpdesk.com", "agent_id": "support-agent"}
