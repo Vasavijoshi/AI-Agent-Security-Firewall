@@ -22,12 +22,15 @@ import sys
 
 from attacks.common import (
     REAL_DOCKER_VERIFIED,
-    TEST_ONLY,
+    UNVERIFIED,
     AttackResult,
+    assess_mechanism,
+    emit_result_json,
+    mechanism_exit_code,
     print_report,
     reset_process_state,
     run_locally,
-    try_live_pep_call,
+    try_live_pep_call_verified,
 )
 
 PEP_URL = os.environ.get("PEP_URL", "http://pep:8080")
@@ -37,17 +40,22 @@ TOOL = "db.query"
 ARGUMENTS = {"table": "credentials"}
 SESSION_ID = "a5-credential-access"
 
+EXPECTED_ROLE = "support_agent"
+EXPECTED_DECISION = "DENY"
+EXPECTED_REASON = "matched_explicit_deny"
+
 
 def run() -> AttackResult:
     reset_process_state()
     notes: list[str] = []
 
-    live = try_live_pep_call(
+    live = try_live_pep_call_verified(
         pep_url=PEP_URL,
         identity_url=IDENTITY_URL,
         tool=TOOL,
         arguments=ARGUMENTS,
         session_id=SESSION_ID,
+        expected_role=EXPECTED_ROLE,
     )
     local_result, local_event = run_locally(
         role="support_agent",
@@ -57,19 +65,28 @@ def run() -> AttackResult:
         session_id=SESSION_ID,
     )
 
-    if live is not None:
+    mechanism_match: bool | None = None
+    if live.reachable and live.role_ok:
         status = REAL_DOCKER_VERIFIED
-        decision, reason = live["decision"], live["reason"]
+        decision, reason = live.decision, live.reason
+        mechanism_match = assess_mechanism(decision, reason, EXPECTED_DECISION, EXPECTED_REASON)
         notes.append(
-            "decision/reason above came from the live PEP; risk_score/risk_factors/full event "
-            "below are from an identical local replay."
+            f"decision/reason above came from the live PEP, after genuinely verifying this "
+            f"container attested as role={live.attested_role!r}; risk_score/risk_factors/full "
+            "event below are from an identical local replay."
         )
     else:
-        status = TEST_ONLY
-        decision, reason = local_result.decision.name, local_result.reason
+        status = UNVERIFIED
+        decision, reason = "NOT_ATTEMPTED", "real_docker_path_unreachable"
         notes.append(
-            f"live identity ({IDENTITY_URL}) / PEP ({PEP_URL}) unreachable - no Docker deployment "
-            "in this environment. This run used an in-process replay of the real pep.pipeline code."
+            f"REQUIRED real path not reached: {live.error} Reported UNVERIFIED, not blocked — "
+            "run via `docker compose run --rm support-agent python -m attacks.a5` (the container "
+            "that genuinely attests as support_agent) to actually demonstrate it."
+        )
+        notes.append(
+            f"supplementary only (does not count toward this attack's verification): a local "
+            f"replay produced decision={local_result.decision.name} reason={local_result.reason!r} "
+            f"policy_id={local_result.policy_id!r} — not itself a Docker attestation."
         )
     notes.append(
         "risk/scorer.py's dedicated CRED_ACCESS action-class factor (30 points) never fires for "
@@ -84,7 +101,7 @@ def run() -> AttackResult:
         description="Credential access / privilege escalation - support_agent reads credentials",
         category="credential_access",
         attempted=f"{TOOL} table={ARGUMENTS['table']!r}",
-        identity_desc="role=support_agent, service=support-agent (genuinely signed token)",
+        identity_desc=f"role={EXPECTED_ROLE}, service=support-agent (attested and verified)",
         destination=f"db table: {ARGUMENTS['table']}",
         stage="policy (stage 3) - explicit deny, R-SUPPORT-003",
         policy_id=local_result.policy_id,
@@ -95,9 +112,14 @@ def run() -> AttackResult:
         event=local_event,
         verification_status=status,
         notes=notes,
+        expected_decision=EXPECTED_DECISION,
+        expected_reason=EXPECTED_REASON,
+        mechanism_match=mechanism_match,
     )
 
 
 if __name__ == "__main__":
-    print_report(run())
-    sys.exit(0)
+    _result = run()
+    print_report(_result)
+    emit_result_json(_result)
+    sys.exit(mechanism_exit_code(_result))

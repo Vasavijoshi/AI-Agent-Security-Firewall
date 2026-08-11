@@ -13,7 +13,7 @@ fix - that log says so explicitly. This script does not overstate that gap: it r
 REAL_DOCKER_VERIFIED only when it can itself reach a live PEP :8081 in this run.
 
 Run for real, after `docker compose up -d`:
-    docker compose exec agent python -m attacks.a9
+    docker compose run --rm agent python -m attacks.a9
 Then independently confirm attribution with:
     docker compose logs pep | Select-String "BYPASS_ATTEMPTED"
 (agent-net has no route to eventstore, so this script cannot fetch the durable event itself even
@@ -33,6 +33,9 @@ from attacks.common import (
     REAL_DOCKER_VERIFIED,
     UNVERIFIED,
     AttackResult,
+    assess_mechanism,
+    emit_result_json,
+    mechanism_exit_code,
     print_report,
     try_live_raw_connect,
 )
@@ -41,6 +44,13 @@ PEP_HOST = os.environ.get("PEP_HOST", "pep")
 PEP_BYPASS_PORT = int(os.environ.get("PEP_BYPASS_PORT", "8081"))
 TARGET = "https://evil.com/"
 REQUEST_LINE = "CONNECT evil.com:443 HTTP/1.1"
+
+# WHY no EXPECTED_ROLE here: this path deliberately presents no identity at all (the whole point of
+# the bypass-catch listener is that it denies unconditionally, before identity is ever checked) —
+# there is nothing to role-verify. Dispatched from the `agent` service only because agent-net is
+# the network this listener is reachable from, not because research_agent's identity matters here.
+EXPECTED_DECISION = "DENY"
+EXPECTED_REASON = "BYPASS_ATTEMPTED"
 
 
 class _CaptureHandler(logging.Handler):
@@ -89,6 +99,7 @@ def run() -> AttackResult:
     notes: list[str] = []
 
     live_response = try_live_raw_connect(PEP_HOST, PEP_BYPASS_PORT, REQUEST_LINE)
+    mechanism_match: bool | None = None
 
     if live_response is not None:
         status = REAL_DOCKER_VERIFIED
@@ -96,6 +107,7 @@ def run() -> AttackResult:
         reason = (
             "BYPASS_ATTEMPTED" if decision == "DENY" else f"unexpected response: {live_response}"
         )
+        mechanism_match = assess_mechanism(decision, reason, EXPECTED_DECISION, EXPECTED_REASON)
         event: dict = {}
         notes.append(f"live response line from {PEP_HOST}:{PEP_BYPASS_PORT}: {live_response!r}")
         notes.append(
@@ -114,7 +126,7 @@ def run() -> AttackResult:
             f"REQUIRED real path unreachable: {PEP_HOST}:{PEP_BYPASS_PORT} did not respond - no "
             "Docker deployment in this environment. A9 is specifically about the deployed "
             "listener, so this is reported UNVERIFIED, not blocked. Run `docker compose up -d` "
-            "then `docker compose exec agent python -m attacks.a9` to actually demonstrate it."
+            "then `docker compose run --rm agent python -m attacks.a9` to actually demonstrate it."
         )
         notes.append(
             f"supplementary only (does not count toward this attack's verification): the real "
@@ -139,9 +151,14 @@ def run() -> AttackResult:
         event=event,
         verification_status=status,
         notes=notes,
+        expected_decision=EXPECTED_DECISION,
+        expected_reason=EXPECTED_REASON,
+        mechanism_match=mechanism_match,
     )
 
 
 if __name__ == "__main__":
-    print_report(run())
-    sys.exit(0)
+    _result = run()
+    print_report(_result)
+    emit_result_json(_result)
+    sys.exit(mechanism_exit_code(_result))

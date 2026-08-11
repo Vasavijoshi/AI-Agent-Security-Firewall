@@ -26,12 +26,15 @@ import sys
 
 from attacks.common import (
     REAL_DOCKER_VERIFIED,
-    TEST_ONLY,
+    UNVERIFIED,
     AttackResult,
+    assess_mechanism,
+    emit_result_json,
+    mechanism_exit_code,
     print_report,
     reset_process_state,
     run_locally,
-    try_live_pep_call,
+    try_live_pep_call_verified,
 )
 
 PEP_URL = os.environ.get("PEP_URL", "http://pep:8080")
@@ -43,28 +46,30 @@ QUERY_TOOL = "db.query"
 QUERY_ARGUMENTS = {"table": "credentials"}
 SESSION_ID = "a3-taint-ceiling"
 
+# WHY this can never reach REAL_DOCKER_VERIFIED, structurally, and that is intentional: admin_agent
+# has no deployed compose service and no identity/issuer.py AGENT_REGISTRY entry (only
+# agent/finance-agent/support-agent are real containers in this project's current topology). This
+# script does NOT invent an admin-agent service to make itself pass — per this milestone's own
+# instruction, a role that genuinely doesn't exist in the deployed topology is reported UNVERIFIED,
+# honestly, every time. Whichever real container this script happens to be run from will attest as
+# THAT container's own real role, which is never "admin_agent" — try_live_pep_call_verified's role
+# check rejects that correctly, the same mechanism that catches every other role mismatch.
+EXPECTED_ROLE = "admin_agent"
+EXPECTED_DECISION = "DENY"
+EXPECTED_REASON = "no_matching_rule"
+
 
 def run() -> AttackResult:
     reset_process_state()
     notes: list[str] = []
 
-    live_fetch = try_live_pep_call(
+    live_query = try_live_pep_call_verified(
         pep_url=PEP_URL,
         identity_url=IDENTITY_URL,
-        tool=FETCH_TOOL,
-        arguments=FETCH_ARGUMENTS,
+        tool=QUERY_TOOL,
+        arguments=QUERY_ARGUMENTS,
         session_id=SESSION_ID,
-    )
-    live_query = (
-        try_live_pep_call(
-            pep_url=PEP_URL,
-            identity_url=IDENTITY_URL,
-            tool=QUERY_TOOL,
-            arguments=QUERY_ARGUMENTS,
-            session_id=SESSION_ID,
-        )
-        if live_fetch is not None
-        else None
+        expected_role=EXPECTED_ROLE,
     )
 
     # Local replay: same session_id for both calls, so taint set by the first genuinely carries
@@ -93,28 +98,37 @@ def run() -> AttackResult:
     notes.append(
         "admin_agent has no deployed compose service and no identity/issuer.py AGENT_REGISTRY "
         "entry in this project's current topology (only agent/finance-agent/support-agent are "
-        "real containers) - so this attack's identity/attestation layer cannot reach "
-        "REAL_DOCKER_VERIFIED regardless of whether Docker is running; only the pipeline stages "
-        "downstream of identity (normalize/policy/threat-intel/DLP/risk/decision) can be, if a "
-        "real research_agent/finance_agent/support_agent token were substituted. This is disclosed "
-        "here rather than worked around, since admin_agent is the only role in the current bundle "
-        "whose own rules produce a clean, single-session taint-ceiling demonstration."
+        "real containers) - this attack's live identity/attestation layer therefore cannot reach "
+        "REAL_DOCKER_VERIFIED regardless of whether Docker is running, and is reported UNVERIFIED "
+        "every time on purpose, not worked around by inventing a container for it. Only the "
+        "pipeline stages downstream of identity are exercised for real here, via local replay."
     )
 
-    if live_query is not None:
+    mechanism_match: bool | None = None
+    if live_query.reachable and live_query.role_ok:
+        # Structurally unreachable in this project's current topology (see the module docstring) —
+        # kept here, not special-cased away, so a future real admin-agent service would correctly
+        # flow through the exact same path as every other attack.
         status = REAL_DOCKER_VERIFIED
-        decision, reason = live_query["decision"], live_query["reason"]
+        decision, reason = live_query.decision, live_query.reason
+        mechanism_match = assess_mechanism(decision, reason, EXPECTED_DECISION, EXPECTED_REASON)
         notes.append(
             "decision/reason above came from the live PEP for the second (db.query) call; "
             "risk_score/risk_factors/full event below are from an identical local replay."
         )
     else:
-        status = TEST_ONLY
-        decision, reason = local_query_result.decision.name, local_query_result.reason
+        status = UNVERIFIED
+        decision, reason = "NOT_ATTEMPTED", "real_docker_path_unreachable"
         notes.append(
-            f"live identity ({IDENTITY_URL}) / PEP ({PEP_URL}) unreachable - no Docker deployment "
-            "in this environment. Both calls above were replayed in-process against the real "
-            "pep.pipeline code, sharing one session_id so taint genuinely carried between them."
+            f"REQUIRED real path not reached: {live_query.error} Reported UNVERIFIED, not "
+            "blocked — a local replay is not accepted as proof of this scenario's own live "
+            "mechanism."
+        )
+        notes.append(
+            f"supplementary only (does not count toward this attack's verification): a local "
+            f"replay produced decision={local_query_result.decision.name} "
+            f"reason={local_query_result.reason!r} policy_id={local_query_result.policy_id!r} — "
+            "not itself a Docker attestation."
         )
 
     return AttackResult(
@@ -122,7 +136,7 @@ def run() -> AttackResult:
         description="Taint ceiling - secret-table read denied after the session was tainted",
         category="taint_containment",
         attempted=f"{QUERY_TOOL} table={QUERY_ARGUMENTS['table']!r} (session now tainted)",
-        identity_desc="role=admin_agent, service=admin-agent (genuinely signed token)",
+        identity_desc="role=admin_agent, service=admin-agent (no deployed workload — see notes)",
         destination=f"db table: {QUERY_ARGUMENTS['table']}",
         stage="policy (stage 3) - R-ADMIN-002 requires clean taint, excluded once tainted",
         policy_id=local_query_result.policy_id,
@@ -133,9 +147,14 @@ def run() -> AttackResult:
         event=local_query_event,
         verification_status=status,
         notes=notes,
+        expected_decision=EXPECTED_DECISION,
+        expected_reason=EXPECTED_REASON,
+        mechanism_match=mechanism_match,
     )
 
 
 if __name__ == "__main__":
-    print_report(run())
-    sys.exit(0)
+    _result = run()
+    print_report(_result)
+    emit_result_json(_result)
+    sys.exit(mechanism_exit_code(_result))

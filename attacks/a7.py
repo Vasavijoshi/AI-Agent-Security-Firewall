@@ -20,12 +20,15 @@ import sys
 
 from attacks.common import (
     REAL_DOCKER_VERIFIED,
-    TEST_ONLY,
+    UNVERIFIED,
     AttackResult,
+    assess_mechanism,
+    emit_result_json,
+    mechanism_exit_code,
     print_report,
     reset_process_state,
     run_locally,
-    try_live_pep_call,
+    try_live_pep_call_verified,
 )
 
 PEP_URL = os.environ.get("PEP_URL", "http://pep:8080")
@@ -35,17 +38,29 @@ TOOL = "http.get"
 ARGUMENTS = {"url": "https://known-c2.example/beacon"}
 SESSION_ID = "a7-malicious-tool"
 
+# WHY expected_reason is "no_matching_rule", not something threat-intel-shaped: research_agent has
+# no allow rule for this destination either, so policy's default-deny is the primary wall (min() in
+# pep/pipeline.py always prefers the policy candidate on a tie) - the threat-intel hit is a real,
+# independently-triggered side effect (quarantine.enter()), not the `reason` string itself. Run
+# with quarantine already cleared (see run_all.py), this call's OWN mechanism is the default-deny;
+# what it demonstrates about threat intel is that the NEXT call from this workload gets quarantined
+# — exactly what A10 demonstrates on purpose.
+EXPECTED_ROLE = "research_agent"
+EXPECTED_DECISION = "DENY"
+EXPECTED_REASON = "no_matching_rule"
+
 
 def run() -> AttackResult:
     reset_process_state()
     notes: list[str] = []
 
-    live = try_live_pep_call(
+    live = try_live_pep_call_verified(
         pep_url=PEP_URL,
         identity_url=IDENTITY_URL,
         tool=TOOL,
         arguments=ARGUMENTS,
         session_id=SESSION_ID,
+        expected_role=EXPECTED_ROLE,
     )
     quarantine_calls: list[tuple[str, str]] = []
     local_result, local_event = run_locally(
@@ -57,20 +72,28 @@ def run() -> AttackResult:
         quarantine_calls=quarantine_calls,
     )
 
-    if live is not None:
+    mechanism_match: bool | None = None
+    if live.reachable and live.role_ok:
         status = REAL_DOCKER_VERIFIED
-        decision, reason = live["decision"], live["reason"]
+        decision, reason = live.decision, live.reason
+        mechanism_match = assess_mechanism(decision, reason, EXPECTED_DECISION, EXPECTED_REASON)
         notes.append(
-            "decision/reason above came from the live PEP; risk_score/risk_factors/full event "
-            "below, and the quarantine side effect note, are from an identical local replay."
+            f"decision/reason above came from the live PEP, after genuinely verifying this "
+            f"container attested as role={live.attested_role!r}; risk_score/risk_factors/full "
+            "event below, and the quarantine side effect note, are from an identical local replay."
         )
     else:
-        status = TEST_ONLY
-        decision, reason = local_result.decision.name, local_result.reason
+        status = UNVERIFIED
+        decision, reason = "NOT_ATTEMPTED", "real_docker_path_unreachable"
         notes.append(
-            f"live identity ({IDENTITY_URL}) / PEP ({PEP_URL}) unreachable - no Docker deployment "
-            "in this environment. This run used an in-process replay of the real pep.pipeline code "
-            "(including the real threat_intel.feed.is_known_bad() lookup)."
+            f"REQUIRED real path not reached: {live.error} Reported UNVERIFIED, not blocked — "
+            "run via `docker compose run --rm agent python -m attacks.a7` (the container that "
+            "genuinely attests as research_agent) to actually demonstrate it."
+        )
+        notes.append(
+            f"supplementary only (does not count toward this attack's verification): a local "
+            f"replay produced decision={local_result.decision.name} reason={local_result.reason!r} "
+            f"policy_id={local_result.policy_id!r} — not itself a Docker attestation."
         )
 
     if quarantine_calls:
@@ -91,7 +114,7 @@ def run() -> AttackResult:
         description="Malicious tool - request targets a known-bad, threat-intel-listed destination",
         category="threat_intel_hit",
         attempted=f"{TOOL} {ARGUMENTS['url']}",
-        identity_desc="role=research_agent, service=agent (genuinely signed token)",
+        identity_desc=f"role={EXPECTED_ROLE}, service=agent (genuinely attested and verified)",
         destination=ARGUMENTS["url"],
         stage="threat intel (stage 4) - local blocklist hit; policy also denies independently",
         policy_id=local_result.policy_id,
@@ -102,9 +125,14 @@ def run() -> AttackResult:
         event=local_event,
         verification_status=status,
         notes=notes,
+        expected_decision=EXPECTED_DECISION,
+        expected_reason=EXPECTED_REASON,
+        mechanism_match=mechanism_match,
     )
 
 
 if __name__ == "__main__":
-    print_report(run())
-    sys.exit(0)
+    _result = run()
+    print_report(_result)
+    emit_result_json(_result)
+    sys.exit(mechanism_exit_code(_result))

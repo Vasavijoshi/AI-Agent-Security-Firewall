@@ -12,12 +12,15 @@ import sys
 
 from attacks.common import (
     REAL_DOCKER_VERIFIED,
-    TEST_ONLY,
+    UNVERIFIED,
     AttackResult,
+    assess_mechanism,
+    emit_result_json,
+    mechanism_exit_code,
     print_report,
     reset_process_state,
     run_locally,
-    try_live_pep_call,
+    try_live_pep_call_verified,
 )
 
 PEP_URL = os.environ.get("PEP_URL", "http://pep:8080")
@@ -27,17 +30,26 @@ TOOL = "http.get"
 ARGUMENTS = {"url": "https://api.premium-market-data.example.com/v1/reports"}
 SESSION_ID = "a1-unauthorized-api"
 
+# WHY this scenario requires research_agent specifically, dispatched from the `agent` compose
+# service: identity/issuer.py's AGENT_REGISTRY maps compose service -> role, so the only container
+# that can genuinely attest as research_agent is `agent` (see attacks/common.py's ROLE_TO_SERVICE
+# and run_all.py's dispatch table — the C1 fix).
+EXPECTED_ROLE = "research_agent"
+EXPECTED_DECISION = "DENY"
+EXPECTED_REASON = "no_matching_rule"
+
 
 def run() -> AttackResult:
     reset_process_state()
     notes: list[str] = []
 
-    live = try_live_pep_call(
+    live = try_live_pep_call_verified(
         pep_url=PEP_URL,
         identity_url=IDENTITY_URL,
         tool=TOOL,
         arguments=ARGUMENTS,
         session_id=SESSION_ID,
+        expected_role=EXPECTED_ROLE,
     )
     local_result, local_event = run_locally(
         role="research_agent",
@@ -47,22 +59,33 @@ def run() -> AttackResult:
         session_id=SESSION_ID,
     )
 
-    if live is not None:
+    mechanism_match: bool | None = None
+    if live.reachable and live.role_ok:
         status = REAL_DOCKER_VERIFIED
-        decision, reason = live["decision"], live["reason"]
+        decision, reason = live.decision, live.reason
+        mechanism_match = assess_mechanism(decision, reason, EXPECTED_DECISION, EXPECTED_REASON)
         notes.append(
-            "decision/reason above came from the live PEP's /v1/tool-call response; "
-            "risk_score/risk_factors/full event below are from an identical local replay "
-            "(same role, tool, arguments) because the PEP's public API deliberately does not "
-            "expose per-decision risk internals to the caller."
+            "decision/reason above came from the live PEP's /v1/tool-call response, reached "
+            f"after genuinely verifying (via the issuer's real signature) that this container "
+            f"attested as role={live.attested_role!r} — the role this scenario requires. "
+            "risk_score/risk_factors/full event below are from an identical local replay (same "
+            "role, tool, arguments) because the PEP's public API deliberately does not expose "
+            "per-decision risk internals to the caller."
         )
     else:
-        status = TEST_ONLY
-        decision, reason = local_result.decision.name, local_result.reason
+        status = UNVERIFIED
+        decision, reason = "NOT_ATTEMPTED", "real_docker_path_unreachable"
         notes.append(
-            f"live identity ({IDENTITY_URL}) / PEP ({PEP_URL}) unreachable — no Docker deployment "
-            "in this environment. This run used an in-process replay of the real pep.pipeline "
-            "code with a genuinely signed token instead of the live attestation + proxy path."
+            f"REQUIRED real path not reached: {live.error} This attack is reported UNVERIFIED, "
+            "not blocked — a local replay is not accepted as proof of this scenario's own live "
+            "mechanism. Run via `docker compose run --rm agent python -m attacks.a1` (the "
+            "container that genuinely attests as research_agent) to actually demonstrate it."
+        )
+        notes.append(
+            f"supplementary only (does not count toward this attack's verification): a local "
+            f"replay of the identical call against the real pipeline produced "
+            f"decision={local_result.decision.name} reason={local_result.reason!r} "
+            f"policy_id={local_result.policy_id!r} — not itself a Docker attestation."
         )
 
     return AttackResult(
@@ -70,7 +93,7 @@ def run() -> AttackResult:
         description="Unauthorized API access - destination outside role charter",
         category="unauthorized_destination",
         attempted=f"{TOOL} {ARGUMENTS['url']}",
-        identity_desc="role=research_agent, service=agent (genuinely signed token)",
+        identity_desc=f"role={EXPECTED_ROLE}, service=agent (genuinely attested and verified)",
         destination=ARGUMENTS["url"],
         stage="policy (stage 3) — implicit default-deny, no matching rule",
         policy_id=local_result.policy_id,
@@ -81,9 +104,14 @@ def run() -> AttackResult:
         event=local_event,
         verification_status=status,
         notes=notes,
+        expected_decision=EXPECTED_DECISION,
+        expected_reason=EXPECTED_REASON,
+        mechanism_match=mechanism_match,
     )
 
 
 if __name__ == "__main__":
-    print_report(run())
-    sys.exit(0)
+    _result = run()
+    print_report(_result)
+    emit_result_json(_result)
+    sys.exit(mechanism_exit_code(_result))

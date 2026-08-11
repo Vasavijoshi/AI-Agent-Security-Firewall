@@ -12,9 +12,11 @@ requirement, since it demonstrates the same policy logic without the real Docker
 Definition of Done for A4 specifically asks for.
 
 Run for real via, after `docker compose up -d`:
-    docker compose exec agent python -m attacks.a4
-(agent-net hostnames "identity"/"pep" only resolve inside the compose network, so running this
-from the host or without Docker running structurally cannot reach REAL_DOCKER_VERIFIED.)
+    docker compose run --rm agent python -m attacks.a4
+(`run`, not `exec` - `agent` is a one-shot batch job with no long-running container for `exec` to
+target once its default scenario finishes. agent-net hostnames "identity"/"pep" only resolve
+inside the compose network, so running this from the host or without Docker running structurally
+cannot reach REAL_DOCKER_VERIFIED.)
 """
 
 from __future__ import annotations
@@ -26,10 +28,13 @@ from attacks.common import (
     REAL_DOCKER_VERIFIED,
     UNVERIFIED,
     AttackResult,
+    assess_mechanism,
+    emit_result_json,
+    mechanism_exit_code,
     print_report,
     reset_process_state,
     run_locally,
-    try_live_pep_call,
+    try_live_pep_call_verified,
 )
 
 PEP_URL = os.environ.get("PEP_URL", "http://pep:8080")
@@ -43,17 +48,22 @@ ARGUMENTS = {
 }
 SESSION_ID = "a4-lateral-movement"
 
+EXPECTED_ROLE = "research_agent"
+EXPECTED_DECISION = "DENY"
+EXPECTED_REASON = "no_matching_east_west_rule"
+
 
 def run() -> AttackResult:
     reset_process_state()
     notes: list[str] = []
 
-    live = try_live_pep_call(
+    live = try_live_pep_call_verified(
         pep_url=PEP_URL,
         identity_url=IDENTITY_URL,
         tool=TOOL,
         arguments=ARGUMENTS,
         session_id=SESSION_ID,
+        expected_role=EXPECTED_ROLE,
     )
 
     # Supplementary only - not the source of truth for this attack's verification_status. Uses the
@@ -68,26 +78,28 @@ def run() -> AttackResult:
         session_id=SESSION_ID,
     )
 
-    if live is not None:
+    mechanism_match: bool | None = None
+    if live.reachable and live.role_ok:
         status = REAL_DOCKER_VERIFIED
-        decision, reason = live["decision"], live["reason"]
+        decision, reason = live.decision, live.reason
         policy_id = local_result.policy_id  # not exposed by the live API; supplementary only
         risk_score, risk_factors = local_result.risk_score, local_result.risk_factors
+        mechanism_match = assess_mechanism(decision, reason, EXPECTED_DECISION, EXPECTED_REASON)
         notes.append(
-            "decision/reason above came from the live PEP, reached via a real /attest call "
-            "against the actual deployed 'agent' container's identity. policy_id/risk detail "
-            "below are from the supplementary local replay - not exposed by the live API."
+            f"decision/reason above came from the live PEP, reached after genuinely verifying "
+            f"this container attested as role={live.attested_role!r} against the actual deployed "
+            "'agent' container's identity. policy_id/risk detail below are from the supplementary "
+            "local replay - not exposed by the live API."
         )
     else:
         status = UNVERIFIED
         decision, reason = "NOT_ATTEMPTED", "real_docker_path_unreachable"
         policy_id, risk_score, risk_factors = "N/A", 0, []
         notes.append(
-            f"REQUIRED real path unreachable: identity ({IDENTITY_URL}) / PEP ({PEP_URL}) did not "
-            "respond. This milestone's own instructions forbid treating a local pipeline replay "
-            "as proof for A4 - so this attack is reported UNVERIFIED, not blocked, in this "
-            "environment. Run `docker compose up -d` then "
-            "`docker compose exec agent python -m attacks.a4` to actually demonstrate it."
+            f"REQUIRED real path not reached: {live.error} This milestone's own instructions "
+            "forbid treating a local pipeline replay as proof for A4 - so this attack is reported "
+            "UNVERIFIED, not blocked, in this environment. Run `docker compose up -d` then "
+            "`docker compose run --rm agent python -m attacks.a4` to actually demonstrate it."
         )
         notes.append(
             f"supplementary only (does not count toward this attack's verification): a local "
@@ -115,9 +127,14 @@ def run() -> AttackResult:
         event=local_event,
         verification_status=status,
         notes=notes,
+        expected_decision=EXPECTED_DECISION,
+        expected_reason=EXPECTED_REASON,
+        mechanism_match=mechanism_match,
     )
 
 
 if __name__ == "__main__":
-    print_report(run())
-    sys.exit(0)
+    _result = run()
+    print_report(_result)
+    emit_result_json(_result)
+    sys.exit(mechanism_exit_code(_result))

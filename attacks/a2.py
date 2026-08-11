@@ -14,12 +14,15 @@ import sys
 
 from attacks.common import (
     REAL_DOCKER_VERIFIED,
-    TEST_ONLY,
+    UNVERIFIED,
     AttackResult,
+    assess_mechanism,
+    emit_result_json,
+    mechanism_exit_code,
     print_report,
     reset_process_state,
     run_locally,
-    try_live_pep_call,
+    try_live_pep_call_verified,
 )
 
 PEP_URL = os.environ.get("PEP_URL", "http://pep:8080")
@@ -36,17 +39,26 @@ ARGUMENTS = {
 }
 SESSION_ID = "a2-dlp-exfiltration"
 
+# WHY finance_agent, dispatched from `finance-agent`: R-FINANCE-001 (policy/bundles/default.yaml)
+# ALLOWs this exact call at the policy stage — only DLP (stage 5) narrows it to DENY. Run from the
+# wrong container, this scenario's own claimed mechanism cannot be observed: a different role's
+# policy might deny it first, for an entirely unrelated reason (see docs/hostile-review.md C1).
+EXPECTED_ROLE = "finance_agent"
+EXPECTED_DECISION = "DENY"
+EXPECTED_REASON = "dlp_block"
+
 
 def run() -> AttackResult:
     reset_process_state()
     notes: list[str] = []
 
-    live = try_live_pep_call(
+    live = try_live_pep_call_verified(
         pep_url=PEP_URL,
         identity_url=IDENTITY_URL,
         tool=TOOL,
         arguments=ARGUMENTS,
         session_id=SESSION_ID,
+        expected_role=EXPECTED_ROLE,
     )
     local_result, local_event = run_locally(
         role="finance_agent",
@@ -56,21 +68,29 @@ def run() -> AttackResult:
         session_id=SESSION_ID,
     )
 
-    if live is not None:
+    mechanism_match: bool | None = None
+    if live.reachable and live.role_ok:
         status = REAL_DOCKER_VERIFIED
-        decision, reason = live["decision"], live["reason"]
+        decision, reason = live.decision, live.reason
+        mechanism_match = assess_mechanism(decision, reason, EXPECTED_DECISION, EXPECTED_REASON)
         notes.append(
-            "decision/reason above came from the live PEP; risk_score/risk_factors/full event "
-            "below are from an identical local replay, since the PEP's public API does not "
+            f"decision/reason above came from the live PEP, after genuinely verifying this "
+            f"container attested as role={live.attested_role!r}; risk_score/risk_factors/full "
+            "event below are from an identical local replay, since the PEP's public API does not "
             "expose per-decision risk internals to the caller."
         )
     else:
-        status = TEST_ONLY
-        decision, reason = local_result.decision.name, local_result.reason
+        status = UNVERIFIED
+        decision, reason = "NOT_ATTEMPTED", "real_docker_path_unreachable"
         notes.append(
-            f"live identity ({IDENTITY_URL}) / PEP ({PEP_URL}) unreachable - no Docker deployment "
-            "in this environment. This run used an in-process replay of the real pep.pipeline "
-            "code (including the real dlp.detectors.scan() call) instead."
+            f"REQUIRED real path not reached: {live.error} Reported UNVERIFIED, not blocked — "
+            "run via `docker compose run --rm finance-agent python -m attacks.a2` (the container "
+            "that genuinely attests as finance_agent) to actually demonstrate it."
+        )
+        notes.append(
+            f"supplementary only (does not count toward this attack's verification): a local "
+            f"replay produced decision={local_result.decision.name} reason={local_result.reason!r} "
+            f"policy_id={local_result.policy_id!r} — not itself a Docker attestation."
         )
     notes.append(
         "the matched secret value is never printed by this script or by dlp/detectors.py - only "
@@ -82,7 +102,7 @@ def run() -> AttackResult:
         description="Data exfiltration - structured secret caught by DLP despite policy ALLOW",
         category="dlp_exfiltration",
         attempted=f"{TOOL} {ARGUMENTS['url']} (body contains an AWS-key-shaped secret, redacted)",
-        identity_desc="role=finance_agent, service=finance-agent (genuinely signed token)",
+        identity_desc=f"role={EXPECTED_ROLE}, service=finance-agent (attested and verified)",
         destination=ARGUMENTS["url"],
         stage="DLP (stage 5) - policy alone would ALLOW; DLP narrows to DENY",
         policy_id=local_result.policy_id,
@@ -93,9 +113,14 @@ def run() -> AttackResult:
         event=local_event,
         verification_status=status,
         notes=notes,
+        expected_decision=EXPECTED_DECISION,
+        expected_reason=EXPECTED_REASON,
+        mechanism_match=mechanism_match,
     )
 
 
 if __name__ == "__main__":
-    print_report(run())
-    sys.exit(0)
+    _result = run()
+    print_report(_result)
+    emit_result_json(_result)
+    sys.exit(mechanism_exit_code(_result))

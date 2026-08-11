@@ -238,21 +238,40 @@ stays TBD"), not filled with an estimate.
   to the internet except through the enforcement proxy — independently verified via live Docker
   testing that both an allowlisted and a non-allowlisted destination fail identically at the
   network layer, proving the block is indiscriminate rather than incidental.
+- Built and ran a live-deployment benchmark (`evals/bench_pep.py`) against the real `/v1/tool-call`
+  endpoint over Docker networking — 2,000 requests across two workloads, zero errors, end-to-end
+  p50 130–138 ms — and used the per-stage server timing it captured to identify that durable event
+  logging, not policy or risk evaluation, is the dominant cost in this deployment's pipeline.
+- Found and fixed a real evaluation-integrity bug in my own attack-verification harness (role
+  claimed by a script vs. role actually cryptographically attested by the deployed identity
+  service could silently diverge) by adding real Ed25519 signature verification of each attack's
+  live-attested role before ever reporting it as verified — then re-ran all nine attacks live and
+  confirmed 8 of 9 genuinely denied at their own specific, individually-asserted mechanism, with
+  the ninth correctly and structurally unverifiable because its role has no deployed workload.
 
 ### Numbers considered for a bullet and deliberately left out
 
-- **Live Docker PEP end-to-end latency (p50/p95/p99):** `[ ]` — `evals/bench_pep.py` is built and
-  its HTTP-calling/stats mechanics smoke-tested, but never run against a real Docker deployment (no
-  Docker available in the environment these bullets were written in). Not converted from the
-  in-process pipeline latency (0.203 ms p50, measured, real, but a different thing — see
-  `docs/architecture.md` and the README's Results table for why the two numbers must never be
-  conflated).
-- **"9/9 attacks blocked, live Docker":** considered and rejected as a standalone bullet. The
-  aggregate denial is real (`docs/verification-log.md` Verification 5), but two of nine attacks'
-  individually-claimed mechanisms were not independently confirmed in that specific run (a
-  quarantine-cascade effect and a role-identity-mismatch artifact, both documented in
-  `docs/hostile-review.md` findings C1/C2) — not a clean enough claim for a single unqualified
-  resume line without the caveat undermining its brevity.
+- **Live Docker PEP end-to-end latency (p50/p95/p99):** now measured — 1000 requests/workload,
+  concurrency 10, warm-up 50 discarded, zero errors: `dlp_exercised` p50=138.415/p95=351.680/
+  p99=809.256 ms, `dlp_not_triggered` p50=130.423/p95=413.625/p99=839.947 ms
+  (`docs/verification-log.md` Verification 6; full per-stage breakdown in the README's Results
+  table). Used above, labeled explicitly as **end-to-end HTTP latency**, never as "PEP processing
+  latency" — it is a different number from the in-process pipeline latency (0.203 ms p50, measured,
+  real, but a different thing — see `docs/architecture.md` and the README's Results table for why
+  the two must never be conflated). Kept out of a bare standalone "sub-Xms" resume line on purpose:
+  it is a single run's numbers, on a single-machine Docker-under-WSL2 deployment, not validated for
+  run-to-run variance — the bullet above states what was built and measured, not a headline number
+  stripped of that context.
+- **"9/9 attacks blocked, live Docker":** considered and rejected as a standalone bullet, twice, in
+  the runs under the *previous* execution model. The aggregate denial was real and independently
+  reproduced (`docs/verification-log.md` Verifications 5-6), but individual attacks' claimed
+  mechanisms were not independently confirmed (C1/C2, `docs/hostile-review.md`) — not a clean enough
+  claim for a single unqualified resume line without the caveat undermining its brevity. **Update:**
+  a corrected execution model (per-role dispatch + a real quarantine reset) was built and then
+  actually run live (`docs/verification-log.md` Verification 7): **8 of 9 attacks genuinely
+  verified at their own specific claimed mechanism**, with the ninth (A3, `admin_agent`) correctly
+  and structurally `UNVERIFIED` because no such compose service is deployed — used above as its own
+  bullet, phrased as "8 of 9," not rounded up to "9/9" or left as an unqualified "nine attacks."
 - **"100% production attack prevention" / any absolute security claim:** never used. The corpus
   proves 66 specific, hand-authored attack shapes are blocked — it does not prove coverage of
   attack shapes outside that corpus, and no bullet claims otherwise.

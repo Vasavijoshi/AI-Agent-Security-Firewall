@@ -24,12 +24,15 @@ import sys
 
 from attacks.common import (
     REAL_DOCKER_VERIFIED,
-    TEST_ONLY,
+    UNVERIFIED,
     AttackResult,
+    assess_mechanism,
+    emit_result_json,
+    mechanism_exit_code,
     print_report,
     reset_process_state,
     run_locally,
-    try_live_pep_call,
+    try_live_pep_call_verified,
 )
 from pep.normalize import normalize_url
 
@@ -41,6 +44,10 @@ RAW_URL = "http://evil.com@api.trusted-news.com/"
 ARGUMENTS = {"url": RAW_URL}
 SESSION_ID = "a8-normalization-bypass"
 MIRROR_URL = "http://api.trusted-news.com@evil.com/"
+
+EXPECTED_ROLE = "finance_agent"
+EXPECTED_DECISION = "DENY"
+EXPECTED_REASON = "matched_explicit_deny"
 
 
 def run() -> AttackResult:
@@ -57,12 +64,13 @@ def run() -> AttackResult:
         "never from whichever string appears first in the raw text."
     )
 
-    live = try_live_pep_call(
+    live = try_live_pep_call_verified(
         pep_url=PEP_URL,
         identity_url=IDENTITY_URL,
         tool=TOOL,
         arguments=ARGUMENTS,
         session_id=SESSION_ID,
+        expected_role=EXPECTED_ROLE,
     )
     local_result, local_event = run_locally(
         role="finance_agent",
@@ -72,20 +80,29 @@ def run() -> AttackResult:
         session_id=SESSION_ID,
     )
 
-    if live is not None:
+    mechanism_match: bool | None = None
+    if live.reachable and live.role_ok:
         status = REAL_DOCKER_VERIFIED
-        decision, reason = live["decision"], live["reason"]
+        decision, reason = live.decision, live.reason
+        mechanism_match = assess_mechanism(decision, reason, EXPECTED_DECISION, EXPECTED_REASON)
         notes.append(
-            "decision/reason above came from the live PEP (which itself normalizes stage 2 before "
-            "evaluating/forwarding - AGENTFW_CONTEXT.md §2); risk detail below is a local replay."
+            f"decision/reason above came from the live PEP (which itself normalizes stage 2 "
+            f"before evaluating/forwarding - AGENTFW_CONTEXT.md §2), after genuinely verifying "
+            f"this container attested as role={live.attested_role!r}; risk detail below is a "
+            "local replay."
         )
     else:
-        status = TEST_ONLY
-        decision, reason = local_result.decision.name, local_result.reason
+        status = UNVERIFIED
+        decision, reason = "NOT_ATTEMPTED", "real_docker_path_unreachable"
         notes.append(
-            f"live identity ({IDENTITY_URL}) / PEP ({PEP_URL}) unreachable - no Docker deployment "
-            "in this environment. This run used an in-process replay of the real pep.pipeline "
-            "code, including the real pep.normalize.normalize_url() call at stage 2."
+            f"REQUIRED real path not reached: {live.error} Reported UNVERIFIED, not blocked — "
+            "run via `docker compose run --rm finance-agent python -m attacks.a8` (the container "
+            "that genuinely attests as finance_agent) to actually demonstrate it."
+        )
+        notes.append(
+            f"supplementary only (does not count toward this attack's verification): a local "
+            f"replay produced decision={local_result.decision.name} reason={local_result.reason!r} "
+            f"policy_id={local_result.policy_id!r} — not itself a Docker attestation."
         )
     notes.append(
         "finance_agent has no http.get charter at all (R-FINANCE-003) - this call is denied "
@@ -98,7 +115,7 @@ def run() -> AttackResult:
         description="Normalization bypass - userinfo cannot fool destination/policy evaluation",
         category="normalization_bypass",
         attempted=f"{TOOL} {RAW_URL}",
-        identity_desc="role=finance_agent, service=finance-agent (genuinely signed token)",
+        identity_desc=f"role={EXPECTED_ROLE}, service=finance-agent (attested and verified)",
         destination=canonical.url,
         stage="normalization (stage 2) produces the real destination; policy (stage 3) denies it",
         policy_id=local_result.policy_id,
@@ -109,9 +126,14 @@ def run() -> AttackResult:
         event=local_event,
         verification_status=status,
         notes=notes,
+        expected_decision=EXPECTED_DECISION,
+        expected_reason=EXPECTED_REASON,
+        mechanism_match=mechanism_match,
     )
 
 
 if __name__ == "__main__":
-    print_report(run())
-    sys.exit(0)
+    _result = run()
+    print_report(_result)
+    emit_result_json(_result)
+    sys.exit(mechanism_exit_code(_result))

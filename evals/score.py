@@ -33,10 +33,10 @@ milestone:
      "arguments": {...}, "description": str, "offset_seconds": number}
 
 One record = one tool call, replayed through pep.pipeline.run_pipeline() with a genuinely signed
-token for `role`/`service` (attacks.common.run_locally — the same real-pipeline mechanism the nine
+token for `role`/`service` (attacks.common.run_locally — the same real-pipeline mechanism the A1-A9
 attack demonstrations use, not a fabricated decision). This is an in-process replay, not a live
 Docker run: see AGENTFW_CONTEXT.md's standing no-Docker-in-this-environment caveat and each
-attack's own REAL_DOCKER_VERIFIED/TEST_ONLY reporting for what that distinction means here.
+attack's own REAL_DOCKER_VERIFIED/UNVERIFIED reporting for what that distinction means here.
 
 WHY behavioral state (risk/scorer.py's novelty/rate/bigram tracking) is NOT reset between records
 within one corpus: resetting per-record would make every single call look like a brand-new agent's

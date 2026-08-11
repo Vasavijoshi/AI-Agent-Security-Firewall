@@ -16,7 +16,36 @@ restating for completeness).
 
 ### C1 — Attack scripts' "REAL_DOCKER_VERIFIED" status can be true for the wrong identity
 
-**Finding:** `attacks/common.py`'s `try_live_pep_call()` posts to `/attest` with no parameters —
+**Status: RESOLVED for A1/A2/A4–A9 (8 of 9), live-verified (Verification 7). A3 remains
+structurally `UNVERIFIED` by design, not as a residual instance of this bug.** The original finding
+below (and its Verification 6 reconfirmation) is preserved in full, unedited — it is what motivated
+the fix, not a stale claim to be tidied away now that code has changed.
+
+**What changed:** `attacks/common.py`'s `try_live_pep_call()` was replaced with
+`try_live_pep_call_verified()`, which calls a new `attest_and_verify_role()` — a real `POST
+/attest`, a real `GET /public-key`, and a real Ed25519 signature verification
+(`identity.tokens.verify_token`) of the returned token, the same check `pep/pipeline.py` itself
+performs. `REAL_DOCKER_VERIFIED` is now reported only when the genuinely-attested role matches the
+scenario's own declared `EXPECTED_ROLE`; a mismatch reports `UNVERIFIED` with an explicit error,
+never a silent pass. `attacks/run_all.py` was rewritten to dispatch each attack via `docker compose
+run --rm <service> ...` to the compose service that actually attests as the role that attack needs
+(`ROLE_TO_SERVICE`), instead of running all nine in one shared container. `admin_agent` (A3) has no
+service in that table, on purpose — no fake service was invented for it; A3 is structurally
+`UNVERIFIED` for its live path, honestly, every time. Full detail:
+`docs/verification-log.md`'s "C1/C2 remediation" section and Verification 7.
+
+**How this was actually confirmed, live:** the fix went through three real bugs before it worked
+(a host-side dependency-import bug, a Docker-image packaging gap, and a wrong Compose command
+against a one-shot container — see Verification 7) — each found by an actual run attempt, not
+review. After all three were fixed, `python -m attacks.run_all` was run for real against a live
+deployment: A1, A2, A4, A5, A6, A7, A8, A9 all genuinely attested as their required role and showed
+`mechanism_match: true` — A2 in particular now shows its real claimed mechanism
+(`DLP: dlp_block`) instead of whatever the wrong role's policy happened to produce. A3 correctly
+and structurally reported `UNVERIFIED` — the fix working *for* A3, not a gap in it, since
+`admin_agent` genuinely has no deployed workload to attest as. Full real output in
+`docs/verification-log.md`'s Verification 7.
+
+**Original finding (unedited):** `attacks/common.py`'s `try_live_pep_call()` posts to `/attest` with no parameters —
 correct, since `identity/issuer.py`'s `/attest` is deliberately unauthenticated and derives
 identity entirely from the caller's real source IP (`_lookup_caller_container()`). But this means
 an attack script's live path can only ever attest as *whichever container actually invokes it*,
@@ -41,6 +70,14 @@ as `admin_agent`) still reported `REAL_DOCKER_VERIFIED` in the real run recorded
 **File/function:** `attacks/common.py` — `try_live_pep_call()`; every `run()` function in
 `attacks/a2.py`, `a3.py`, `a5.py`, `a8.py` that hardcodes an `identity_desc` string.
 
+**Reconfirmed, not resolved (Verification 6):** a second, independent run — nine separate
+`docker exec` invocations against the same `m3-agent` container, rather than one shared
+`run_all.py` process — reproduced the same finding, this time backed by a direct grep of the
+*deployed* `identity` container's own `AGENT_REGISTRY` (three entries — `agent`, `finance-agent`,
+`support-agent` — no `admin_agent`), not just a read of the source tree. Nothing here has been
+fixed; the second run makes the finding harder to dismiss as a one-off artifact of a particular
+invocation, not softer.
+
 **Exploit/failure scenario:** not an attacker-facing exploit — an *evaluation-integrity* failure.
 A reviewer who trusts the printed `REAL_DOCKER_VERIFIED` label and identity string without
 independently checking the underlying mechanism would believe more was proven live than actually
@@ -61,7 +98,35 @@ caveat from Verification 5 attached every time it's said out loud.
 
 ### C2 — Quarantine cascade silently substitutes one mechanism for another across a shared run
 
-**Finding:** `pep/pipeline.py`'s quarantine gate runs before stage 3 (policy) and is absolute —
+**Status: RESOLVED, live-verified (Verification 7).** The original finding below (and its
+Verification 6 reconfirmation) is preserved in full, unedited.
+
+**What changed:** `attacks/run_all.py`'s Docker dispatch mode now calls `docker compose exec
+eventstore python -c "..."` immediately before each of A1–A9, using only the existing, real,
+public `GET /quarantine` / `DELETE /quarantine/{agent_id}` routes (`events/app.py`) — the same
+admin surface Verification 6 exercised by hand. It lists what's quarantined, releases it, and
+re-checks `GET /quarantine` returns `{}` before the next attack — the reset step is itself
+verified, not assumed. Every attack now declares `EXPECTED_DECISION`/`EXPECTED_REASON` and grades
+its live result against them (`attacks/common.py`'s `assess_mechanism()`); `AGENT_QUARANTINED`
+substituting for a scenario's own mechanism is now a loud, explicit mismatch (surfaced in the
+report output and a nonzero exit code), not a silent pass folded into "9/9 blocked." A new
+`attacks/a10.py` demonstrates the cascade **on purpose** — quarantine cleared once before two
+back-to-back calls, deliberately not cleared between them — clearly separated from the A1–A9
+independent-verification total via a dedicated `demonstrates_cascade` property, never counted
+toward it. Full detail: `docs/verification-log.md`'s "C1/C2 remediation" section and Verification 7.
+
+**How this was actually confirmed, live:** in Verification 7, the quarantine clear/verify step ran
+successfully before all ten dispatches (A1–A9 plus A10), each time confirming `GET /quarantine ->
+{}` before proceeding — the reset genuinely works against the real container network, not just in
+theory. A10 itself confirmed the cascade for real: call 1 denied by its own genuine mechanism
+(`no_matching_rule`), call 2 — run immediately after with quarantine deliberately not cleared —
+denied specifically by `AGENT_QUARANTINED` (`demonstrates_cascade: true`). None of A1–A9 showed
+`AGENT_QUARANTINED` substituting for their own claimed mechanism in this run; the one mismatch this
+fix is built to catch loudly did not occur, and the tooling to catch it if it had (a printed `***
+MISMATCH ***` banner and a nonzero exit code) is exercised by the passing tests, not just present
+in the code.
+
+**Original finding (unedited):** `pep/pipeline.py`'s quarantine gate runs before stage 3 (policy) and is absolute —
 once a workload is quarantined, every later call from it is denied `reason=AGENT_QUARANTINED`
 regardless of what stage 3–7 would otherwise say. `attacks/run_all.py` runs all nine attacks in one
 process against one persistent eventstore. In the recorded real run (Verification 5), six of nine
@@ -81,6 +146,16 @@ this run entirely (persisted from an earlier, untracked session).
 **File/function:** `pep/pipeline.py` — the quarantine gate block (`if quarantined: return
 _deny_early("AGENT_QUARANTINED", "QUARANTINE_DENY", ...)`), which runs unconditionally before
 `evaluate()`/`evaluate_east_west()`.
+
+**Reconfirmed, not resolved (Verification 6):** a second, independent run (nine separate
+`docker exec` invocations, one per attack) again showed `AGENT_QUARANTINED` substituting for
+claimed mechanisms — this time on A3/A4/A5/A7 rather than A1/A2/A3/A4/A5/A7, a different subset,
+consistent with quarantine state being whatever accumulated on the persistent eventstore before
+that particular sequence ran, not a fixed property of any one attack or one invocation style. The
+same run also produced the first real live confirmation that quarantine *release* works end-to-end
+(enter → persist → `DELETE /quarantine/{agent_id}` → confirmed empty) — a genuine positive result,
+but one that closes a different open item (whether release works) than this finding (whether a
+shared run independently confirms each attack's own mechanism), which remains open.
 
 **Exploit/failure scenario:** none attacker-facing — this is an evaluation-methodology failure
 mode, not a security one. (Arguably the *opposite* of a security weakness: quarantine backstopping
@@ -295,20 +370,37 @@ never run on an actual GitHub Actions runner" until it's pushed.
 
 ### M5 — `evals/bench_pep.py`'s numbers are entirely unmeasured
 
-**Finding:** built and mechanically smoke-tested this milestone, but never run against a real
-Docker deployment (no Docker available in this working environment). The entire Performance section
-of the README's Results table reads `NOT MEASURED`.
+**Status: RESOLVED this milestone.** Originally found: built and mechanically smoke-tested, but
+never run against a real Docker deployment (no Docker available in this working environment). The
+entire Performance section of the README's Results table read `NOT MEASURED`.
+
+**What changed:** the user ran the exact command this finding suggested
+(`evals/bench_pep.py --requests 1000 --concurrency 10 --warmup 50 --workload both`) against their
+own live Docker deployment (Docker under WSL2) and provided the real output. The README's
+Performance section is now filled with real, measured numbers for both workloads — 2,000 total
+requests, zero errors — and `docs/verification-log.md`'s Verification 6 has the full real command
+output. Nothing was estimated or interpolated to close this finding; it was closed by an actual run.
+
+**New observation surfaced by the real numbers (context, not a new finding requiring a fix):** the
+`log` stage dominates server-reported pipeline `total` latency in both workloads — roughly all of
+it, at every percentile. This is stated as a measured fact of *this* deployment (SQLite durable
+write plus an eventstore HTTP round trip inside `pep/proxy.py`'s `_log_event()`) and is explicitly
+not extrapolated to any other environment or claimed as a general property of the architecture. It
+also was not treated as license to skip the end-to-end vs. server-reported-`total` distinction:
+the README states both numbers, separately, and never calls end-to-end latency "PEP processing
+latency."
+
+**Residual, still open:** this is one run's numbers, not repeated-run variance (the original M4
+review's own 5E deep-dive on sample size, below, still applies to whether one run generalizes); and
+the deployment measured (single-machine Docker under WSL2) is not representative of a production
+multi-host network — both already stated as limitations in the README and left as such here rather
+than smoothed over.
 
 **File/function:** `evals/bench_pep.py`.
 
-**Impact:** the single most important technical measurement this milestone asked for is
-structurally incomplete — not fabricated, not estimated, genuinely absent, and stated as such.
-
-**Suggested future direction (not applied):** run it — the exact command is in the README.
-
-**Affects an interview claim:** yes, directly — there is currently no defensible latency claim for
-the live deployed PEP, only for the in-process replay, which is explicitly labeled as such
-everywhere it's used.
+**Affects an interview claim:** yes — there is now a defensible, correctly-labeled end-to-end
+latency claim for the live deployed PEP (previously there was none), with the caveat that it
+reflects a single run on a single-machine deployment.
 
 ---
 
@@ -578,7 +670,11 @@ both now do) rather than argue the corpus is more than it is.
 
 # 5E — M4 performance methodology review
 
-Reviewed against the same skepticism, even though the numbers themselves are `NOT MEASURED`:
+Written while the numbers were still `NOT MEASURED`; the methodology questions below were reviewed
+before a single real number existed, on purpose, so the methodology couldn't be bent to flatter
+whatever the results turned out to be. Real numbers landed later in the same milestone
+(`docs/verification-log.md` Verification 6) and are noted inline below where they change an answer
+— the questions and the reasoning behind each answer are otherwise exactly as originally written:
 
 - **Is the workload representative?** Two fixed request shapes (one `db.query`, one `email.send`),
   both from `support_agent`'s own charter. Representative of *a* real request, not of a realistic
@@ -606,11 +702,14 @@ Reviewed against the same skepticism, even though the numbers themselves are `NO
   every call before this benchmark existed; no new instrumentation was added, none was needed.
 - **Are Docker/network costs included?** By design, yes — the benchmark measures client-side
   wall-clock end-to-end latency, deliberately not subtracting network/Docker overhead.
-- **Is the sample size sufficient?** 1000 requests per workload by default satisfies this
-  milestone's own stated minimum — but this has not actually been run yet (no Docker available),
-  so "sufficient" is a statement about the script's default, not about a collected sample.
-- **Are multiple runs necessary?** Not yet assessed — see L3 above; no repeated-run variance data
-  exists for any latency number in this project yet, in-process or (once collected) live.
+- **Is the sample size sufficient?** 1000 requests per workload satisfies this milestone's own
+  stated minimum, and this has now actually been run — 2,000 measured requests total (2 workloads
+  × 1000), zero errors (`docs/verification-log.md` Verification 6). "Sufficient" is now a statement
+  about a collected sample, not just the script's default — but it is still one sample: a single
+  run, once, on one deployment. It says nothing about run-to-run variance.
+- **Are multiple runs necessary?** Still not assessed — see L3 above; the one real run collected
+  this milestone has no repeated-run companion to compare against, so no variance data exists yet
+  for the live-Docker latency numbers, only a single point estimate per percentile.
 - **Could CPU/cache/container state distort the result?** Unaddressed by the current script — no
   CPU pinning, no isolation from other host load, no reported host resource utilization alongside
   the latency numbers. A real confound for any single-run benchmark on a shared development

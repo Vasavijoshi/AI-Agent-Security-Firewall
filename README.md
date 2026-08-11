@@ -91,25 +91,33 @@ docker compose up -d
 docker compose ps                       # all services should show healthy
 curl http://localhost:8501              # dashboard reachable
 
-# M3 attack suite — the real 9/9 needs to run from inside the agent container, not the host,
-# because A4/A9 specifically require the agent-net route the host doesn't have (see below):
-docker compose exec agent python -m attacks.run_all
+# M3/M4 attack suite — run from the HOST with only `docker` on PATH, NO project dependencies
+# required (see below for why this changed from a `docker compose exec agent ...` invocation):
+python -m attacks.run_all
 
 # Evaluation (in-process pipeline replay — see Results table for exactly what this measures):
-docker compose exec agent python -m evals.score
+docker compose run --rm agent python -m evals.score
 
 # Live PEP performance benchmark (the actual deployed /v1/tool-call endpoint, not a replay):
-docker compose exec support-agent python -m evals.bench_pep --requests 1000
+docker compose run --rm support-agent python -m evals.bench_pep --requests 1000
 
 # Dashboard: http://localhost:8501
 ```
 
-**Why `attacks/run_all.py` needs to run from inside the `agent` container for a true 9/9:** two of
-the nine attacks (A4, multi-agent lateral movement; A9, the raw `:8081` bypass listener) require
-reaching the live `identity`/`pep` containers over `agent-net` — a route that only exists from
-*inside* another container on that network, not from the host (neither port is published in
-`docker-compose.yml`, on purpose — publishing them would itself be a small non-bypassability
-leak). Run bare from the host and those two honestly report `UNVERIFIED` rather than a faked pass.
+**Why `attacks/run_all.py` now runs from the HOST, not from inside a container:** the C1/C2 fix
+(see [Attack verification, corrected methodology](#attack-verification-corrected-methodology-c1c2-fix)) made it dispatch each attack to the *specific* compose service that
+genuinely attests as the role that attack needs (`docker compose run --rm <service> python -m
+attacks.aN`) — which requires the `docker` CLI and compose project context to be available to the
+process running `run_all.py` itself. No current service container has that. Run it directly on the
+host, with `docker compose up -d` already running; it shells out into the right container per
+attack automatically, including for A4 and A9, which still specifically need the `agent-net` route
+(reached the same way as before, just orchestrated from outside now instead of from within a
+single container). **It deliberately needs no project Python dependencies on the host** — only
+`docker` on PATH — since the orchestrator itself never imports `attacks`/`pep`/`identity` code; it
+only shells out and parses JSON (a real bug on the first live attempt, fixed: see
+`docs/verification-log.md`'s Verification 7). If `docker`/`docker compose` aren't reachable from
+wherever it's invoked, `run_all.py` correctly falls back to the in-process, no-Docker mode (which
+*does* need `pip install -r requirements.txt`) instead of silently failing.
 
 If any of this doesn't work on a clean machine with no API key and no cloud account, that's a bug.
 
@@ -146,39 +154,88 @@ these numbers. See footnote [^harness] on how this was corrected mid-milestone.
 
 ### Docker attack verification — live deployment
 
-`docker compose exec` against a running stack — see `docs/verification-log.md`'s Verification 5
-for the full real command output and two important caveats this table's footnotes summarize.
+**Runs 1 and 2 (previous execution model) — what they actually proved, stated precisely:**
+`docker compose exec` against a running stack denied all nine attacks in aggregate, twice,
+independently. They did **not** independently confirm each attack's own specific claimed
+mechanism — see `docs/verification-log.md`'s Verifications 5 and 6 for the full real command output
+and the two methodology caveats this table's footnotes summarize (quarantine cascade; role/identity
+mismatch).
 
 | Metric | Value |
 |---|---|
 | Attacks tested | 9 (A1–A9) |
-| Attacks denied, live Docker | 9 / 9 [^quarantine][^identity-mismatch] |
+| Attacks denied, live Docker (run 1, `run_all.py`, one process) | 9 / 9 [^quarantine][^identity-mismatch] |
+| Attacks denied, live Docker (run 2, nine independent `docker exec` invocations) | 9 / 9 [^quarantine][^identity-mismatch] |
 | A4 (real multi-agent lateral movement) | Reached live, genuinely denied [^quarantine] |
-| A9 (raw `:8081` bypass listener) | Denied live, clean pass, no caveat |
-| A9 `BYPASS_ATTEMPTED` attribution in PEP logs | Independently confirmed — 2 real log lines, real `trace_id`s, `docker compose logs pep` |
+| A9 (raw `:8081` bypass listener) | Denied live, clean pass, no caveat, both runs |
+| A9 `BYPASS_ATTEMPTED` attribution in PEP logs | Independently confirmed both runs — real log lines, real `trace_id`s, `docker compose logs pep` |
 
-### Performance — live Docker PEP, `/v1/tool-call`
+**Run 3 (corrected methodology, per-role dispatch — the C1/C2 fix) — genuinely verified, not just
+denied:**
 
 | Metric | Value |
 |---|---|
-| Request count | NOT MEASURED |
-| Concurrency | NOT MEASURED |
-| Warm-up requests | NOT MEASURED |
-| End-to-end p50 / p95 / p99 | NOT MEASURED |
-| DLP-exercised workload p50 / p95 / p99 | NOT MEASURED |
-| DLP-not-triggered workload p50 / p95 / p99 | NOT MEASURED |
-| Per-stage latency (identity/normalize/policy/threat_intel/dlp/risk/decision/log) | NOT MEASURED |
+| A1–A9 genuinely verified (correct role + own mechanism confirmed) | **8 / 9** [^c1c2-fix] |
+| A3 (admin_agent — no deployed compose service) | `UNVERIFIED`, structurally, by design — not a caveat, the correct answer |
+| A10 (deliberate quarantine-cascade demonstration) | `demonstrates_cascade: true` — confirmed live |
 
-**Why this section is empty:** the tool to produce these numbers (`evals/bench_pep.py`) is built,
-documented, and its HTTP-calling/stats mechanics were smoke-tested against a real running PEP
-process — but I have no Docker in the environment I work in (the standing caveat repeated at every
-milestone in this project), so the actual live numbers have not been collected. Run:
+See [Attack verification, corrected methodology](#attack-verification-corrected-methodology-c1c2-fix) below and `docs/verification-log.md`'s Verification 7 for the full real command
+output, including the three real bugs found and fixed before this run succeeded.
 
+### Performance — live Docker PEP, `/v1/tool-call`
+
+Real measured numbers, collected this milestone via:
 ```bash
-docker compose exec support-agent python -m evals.bench_pep --requests 1000 --concurrency 10 --warmup 50
+docker compose run --rm --no-deps -v "$PWD:/app" -w /app --entrypoint python support-agent \
+  -m evals.bench_pep --requests 1000 --concurrency 10 --warmup 50 --workload both
 ```
+Environment: `python=3.11.15`, Docker under WSL2
+(`Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.41`). 1000 requests per workload,
+concurrency 10, warm-up 50 per workload discarded — 2,000 measured requests total, **zero errors**.
+Both workloads returned `success: 1000, deny: 0, error: 0` — this measures the *allowed* path.
 
-and this table gets filled in with real numbers, not estimates. See
+| Metric | Value |
+|---|---|
+| Request count | 1000 per workload (2000 total) |
+| Concurrency | 10 |
+| Warm-up requests | 50 per workload (discarded) |
+| Errors | 0 / 2000 |
+| **End-to-end HTTP latency — `dlp_exercised`** | p50=138.415 ms · p95=351.680 ms · p99=809.256 ms · mean=174.119 ms |
+| **End-to-end HTTP latency — `dlp_not_triggered`** | p50=130.423 ms · p95=413.625 ms · p99=839.947 ms · mean=169.307 ms |
+
+**Per-stage latency, server-reported (`latency_ms` in the PEP's own response), p50/p95/p99 in ms:**
+
+| Stage | `dlp_exercised` | `dlp_not_triggered` |
+|---|---|---|
+| identity | 0.3885 / 0.6066 / 1.4788 | 0.3680 / 0.5471 / 1.0091 |
+| normalize | 0.0056 / 0.0097 / 0.0485 | 0.0054 / 0.0094 / 0.0133 |
+| policy | 0.0564 / 0.1061 / 0.1670 | 0.0484 / 0.0881 / 0.1533 |
+| threat_intel | 0.0021 / 0.0028 / 0.0031 | 0.0020 / 0.0027 / 0.0030 |
+| dlp | 0.0274 / 0.0428 / 0.0918 | 0.0020 / 0.0031 / 0.0038 |
+| risk | 0.1466 / 0.3262 / 0.8266 | 0.3002 / 0.5190 / 0.8346 |
+| decision | 0.0048 / 0.0082 / 0.0138 | 0.0051 / 0.0083 / 0.0108 |
+| log | 69.5336 / 234.1504 / 676.4877 | 62.5755 / 263.8114 / 595.2960 |
+| **total** (server-reported, sum of stages) | **70.0759 / 234.6148 / 677.0141** | **63.4381 / 264.4298 / 596.0998** |
+
+**How to read this table — two different numbers, do not conflate them:**
+- **End-to-end HTTP latency** is measured client-side (`time.perf_counter()` around the full
+  request), and includes real network/Docker/HTTP-stack overhead. This is what a caller of the PEP
+  actually experiences. It is **not** "PEP processing latency."
+- **Server-reported `total`** is the sum of the eight pipeline stages, timed inside the PEP process
+  itself — it does not include the network/transport time to reach the PEP or return the response.
+  p50 end-to-end (~130–138 ms) is roughly double p50 server-reported `total` (~63–70 ms); that gap
+  is real transport overhead the end-to-end number correctly includes and the stage breakdown
+  correctly doesn't.
+- **The `log` stage dominates server-reported pipeline latency** in both workloads — it accounts for
+  nearly all of `total` at every percentile. This is a measured fact of *this* deployment (SQLite
+  durable write plus an eventstore HTTP round trip in `pep/proxy.py`'s `_log_event()`); it is not
+  extrapolated to any other environment or claimed as a general property of the architecture.
+- **The DLP stage comparison is clean by construction:** `dlp_exercised` (DLP runs on every
+  request) is roughly 10x `dlp_not_triggered` (DLP stage short-circuits) at every percentile —
+  consistent with the two workloads' rules, not inferred from the timing alone.
+
+Full real command output, environment details, and the second independent attack-verification run
+collected in the same session: `docs/verification-log.md`'s Verification 6. See
 [Benchmark methodology](#benchmark-methodology) below for exactly what this measures and its own
 limitations.
 
@@ -207,8 +264,13 @@ limitations.
     workload was already quarantined (evidently from an earlier, untracked debugging run) before
     this run even started. The requests were still genuinely denied over live Docker — quarantine
     backstopping a gap is a real, arguably stronger result — but this run does not independently
-    confirm each attack's *own* claimed mechanism the way a from-cold-state run would. Full detail
-    in `docs/verification-log.md`'s Verification 5.
+    confirm each attack's *own* claimed mechanism the way a from-cold-state run would. **A second,
+    independent run** (nine separate `docker exec` invocations, one per attack, rather than one
+    shared `run_all.py` process) reconfirmed the same underlying finding from a different angle —
+    a different subset of attacks (A3, A4, A5, A7 that time) showed `AGENT_QUARANTINED`, consistent
+    with quarantine state being carried on the persistent eventstore across whatever ran before,
+    not a fixed property of any one attack. Full detail in `docs/verification-log.md`'s
+    Verifications 5 and 6.
 
 [^identity-mismatch]: A structural finding, not a one-off bug: `identity/issuer.py`'s `/attest` is
     deliberately unauthenticated and derives identity entirely from the caller's real network
@@ -218,9 +280,63 @@ limitations.
     `finance_agent`/`admin_agent`/`support_agent`/`finance_agent`, but when `run_all.py` runs from
     a single container, their live component is actually evaluated under *that container's* real
     role. `admin_agent` has no registered workload at all, so A3's live `REAL_DOCKER_VERIFIED`
-    status could only be real for whatever role actually answered. Full detail, including why this
-    was caught by reading the output rather than trusting the summary line, in
-    `docs/verification-log.md`'s Verification 5.
+    status could only be real for whatever role actually answered. **A second, independent run**
+    (nine separate `docker exec` invocations against the same `m3-agent` container) reconfirmed
+    this finding, this time backed by a direct grep of the deployed `identity` container's own
+    `AGENT_REGISTRY` (three entries — `agent`, `finance-agent`, `support-agent` — no `admin_agent`),
+    not just a read of the source tree. Full detail, including why this was caught by reading the
+    output rather than trusting the summary line, in `docs/verification-log.md`'s Verifications 5
+    and 6.
+
+[^c1c2-fix]: 8 of 9 (A1, A2, A4–A9) genuinely `REAL_DOCKER_VERIFIED` with `mechanism_match: true` —
+    correctly attested as the required role AND denied for the exact reason each scenario claims to
+    demonstrate, not just "denied." A3 correctly and structurally reports `UNVERIFIED`: `admin_agent`
+    has no deployed compose service, so no container can ever genuinely attest as it — this is the
+    fix working as intended, not a residual gap. Getting to this result required fixing three real
+    bugs surfaced only by an actual run attempt (a host-side dependency-import bug, a Docker-image
+    packaging gap, and a wrong Compose command against a one-shot container) — see
+    `docs/verification-log.md`'s Verification 7 for the full real output and all three fixes.
+
+---
+
+## Attack verification, corrected methodology (C1/C2 fix)
+
+The two footnotes above describe real problems with *how* A1–A9 were run in Verifications 5 and 6
+— not with whether the underlying enforcement worked. `attacks/run_all.py` and `attacks/common.py`
+were rewritten to fix the execution model those two runs exposed:
+
+- **Each attack is now dispatched to the compose container that can genuinely attest as the role
+  it requires** (`docker compose run --rm <service> python -m attacks.aN` — `research_agent`→`agent`,
+  `finance_agent`→`finance-agent`, `support_agent`→`support-agent`; `docker compose run`, not
+  `exec`, because those three are one-shot batch jobs with no long-running container for `exec` to
+  target once their default scenario finishes — found by an actual run attempt), instead of all
+  nine running from one shared container. The attested role is cryptographically verified (a real
+  `POST /attest`, `GET /public-key`, and Ed25519 signature check) before a result is ever reported
+  `REAL_DOCKER_VERIFIED` — a role mismatch reports `UNVERIFIED` with an explicit error instead of a
+  silent pass. `admin_agent` (A3) has no compose service and none was invented for it; A3 is
+  structurally `UNVERIFIED` for its live path, honestly, by design.
+- **Quarantine is cleared and verified empty immediately before each of A1–A9**, using only
+  `events/app.py`'s existing, real, public `GET`/`DELETE /quarantine` routes — the same admin
+  surface Verification 6 already exercised by hand. No eventstore internals are touched.
+- **Every attack now asserts its own expected decision/reason** and fails loudly — with an explicit
+  MISMATCH banner and a nonzero exit code — if a real, correctly-identified live result doesn't
+  match. `AGENT_QUARANTINED` standing in for a scenario's own mechanism is a mismatch now, not a
+  quiet pass folded into a "9/9 blocked" headline.
+- **A10, a tenth script, demonstrates the quarantine cascade on purpose**: two calls on the same
+  workload, quarantine cleared once before both and deliberately not cleared between them. It is
+  never counted toward the nine independently-verified attacks, and its own report says so
+  explicitly every time it runs.
+
+**This fix has now been run against a live Docker deployment, for real** (`docs/verification-log.md`'s Verification 7): 8 of 9 attacks (all but A3, which is structurally
+`UNVERIFIED` by design) genuinely attested as their required role and showed `mechanism_match:
+true` — the exact reason each scenario claims, not just "denied." A10 confirmed the cascade live:
+call 1 denied by its own mechanism, call 2 denied specifically by `AGENT_QUARANTINED`. Getting
+there required fixing three more real bugs the code review above didn't catch — a host-side
+dependency-import bug, a Docker-image packaging gap, and a wrong Compose command against a one-shot
+container — each found by an actual run attempt, all documented in Verification 7 rather than
+smoothed over. "Eight of nine attacks, each independently verified live at its own claimed
+mechanism, with the ninth correctly and structurally unable to be" is now a claim backed by a real,
+observed, reproducible result — not just code built to support one.
 
 ---
 
@@ -228,7 +344,7 @@ limitations.
 
 `evals/bench_pep.py` measures the **real deployed `/v1/tool-call` endpoint** over live Docker
 networking — end-to-end HTTP latency, not the in-process replay `evals/score.py` measures. Run
-from inside the `support-agent` container specifically (`docker compose exec support-agent
+from inside the `support-agent` container specifically (`docker compose run --rm support-agent
 python -m evals.bench_pep`), because — see the identity finding above — `/attest` can only ever
 attest as whichever container actually calls it.
 
@@ -256,12 +372,20 @@ attest as whichever container actually calls it.
   server-measured per-stage numbers, not derived or estimated client-side.
 - **Docker/network overhead is kept in the number, not subtracted.** The reported latency is
   client-measured, wall-clock, end-to-end.
-- **Known limitations of this methodology:** a single-machine Docker Desktop deployment is not
+- **Known limitations of this methodology:** a single-machine Docker-under-WSL2 deployment is not
   representative of a production multi-host network; the FastAPI route handling `/v1/tool-call` is
   a synchronous `def`, so concurrent requests are served from Starlette's thread pool, not a
   fully async pipeline — worth knowing when interpreting concurrency scaling; no repeated-run
-  variance has been collected (only one run's methodology is documented here, because no run has
-  happened yet in an environment with Docker).
+  variance has been collected (the numbers in [Results](#results) are from one run; the
+  methodology has been exercised once, not validated for run-to-run stability).
+- **What was actually run, once, for real, this milestone:** 1000 requests × 2 workloads ×
+  concurrency 10, warm-up 50 discarded per workload, against a live `docker compose` deployment
+  under WSL2 — see [Results](#results) above for the numbers and
+  `docs/verification-log.md`'s Verification 6 for the full real command output. This is a
+  **live-deployment measurement** of the actual `/v1/tool-call` endpoint — distinct from the
+  workload definitions above (authored by this project, not sampled from production traffic) and
+  distinct from `evals/score.py`'s **synthetic, in-process replay methodology** used for the
+  security-evaluation numbers elsewhere in this README, which never makes a real network call.
 
 ---
 
@@ -402,13 +526,19 @@ Stated plainly, not buried:
   `docs/architecture.md`'s "Prompt injection containment (not detection)" section.
   `evals/corpus_attack.jsonl` demonstrates 66 specific attack shapes get blocked; it does not
   demonstrate coverage of attack shapes not represented in that corpus.
-- **The live Docker performance benchmark has not been run in an environment with Docker
-  available** — `evals/bench_pep.py` is built and its mechanics smoke-tested, but the Results
-  table's performance section is honestly `NOT MEASURED` pending a run against the real deployment.
-- **`docker compose exec agent python -m attacks.run_all`'s live "9/9 blocked" result has two
-  documented methodology caveats** (quarantine cascade contaminating per-attack mechanism
-  attribution; role-identity mismatch for attacks whose claimed role differs from the invoking
-  container) — see the Results table footnotes and `docs/verification-log.md`'s Verification 5.
+- **The live Docker performance benchmark has been run once, not repeatedly.** Real numbers now
+  exist (see [Results](#results)), but no run-to-run variance has been collected, and the
+  deployment it ran against (single-machine Docker under WSL2) is not representative of a
+  production multi-host network — see [Benchmark methodology](#benchmark-methodology).
+- **Both live-Docker attack runs' "9/9 blocked" result has two documented methodology caveats**,
+  reconfirmed independently across two separate invocations (`run_all.py` once, nine individual
+  `docker exec` calls once) (quarantine cascade contaminating per-attack mechanism attribution;
+  role-identity mismatch for attacks whose claimed role differs from the invoking container) — see
+  the Results table footnotes and `docs/verification-log.md`'s Verifications 5 and 6.
+- **A code fix for both of those caveats exists and has been live-verified** (Verification 7): 8 of
+  9 attacks genuinely attest as their required role and confirm their own claimed mechanism; A3
+  remains structurally `UNVERIFIED` by design (no deployed `admin_agent` service). See
+  [Attack verification, corrected methodology](#attack-verification-corrected-methodology-c1c2-fix).
 - **The PEP does not scale horizontally.** Risk/taint state is in-memory, per-process — see Design
   decision 4.
 - **Identity's Docker-socket attestation gives the `identity` container visibility into every
@@ -450,8 +580,21 @@ Prioritized by what the limitations above actually point at, not a wishlist:
 Milestone: **M4 complete — this is the final milestone.** M1–M3 built the enforcement pipeline,
 identity, policy engine, risk scoring, quarantine, nine attack demonstrations, the evaluation
 harness, and the dashboard. M4 added: the live-Docker PEP benchmark tool (`evals/bench_pep.py`,
-numbers pending a Docker-available run), this README, `docs/threat-model.md`, `docs/demo.md`, a
-hostile self-review, and final resume bullets (`AgentFW_Build_Plan_v2.md` §9). See
+now run for real — see [Results](#results)), this README, `docs/threat-model.md`, `docs/demo.md`,
+a hostile self-review, and final resume bullets (`AgentFW_Build_Plan_v2.md` §9). See
 `docs/verification-log.md` for the complete real-command/real-output verification history,
-including two real findings inside a real "9/9 blocked" pass (Verification 5) that are reported
-here rather than smoothed over.
+including two real findings inside a real "9/9 blocked" pass (Verification 5), a second
+independent run reconfirming both from a different angle, and the first real live-Docker
+performance numbers together with two new positive confirmations — digest pins matching deployed
+images, and quarantine release working end-to-end (Verification 6) — all reported here rather than
+smoothed over.
+
+A further round fixed the execution model behind those two findings (per-role container dispatch,
+a real quarantine reset before each independent attack, a tenth script — A10 — that demonstrates
+the cascade on purpose): see [Attack verification, corrected methodology](#attack-verification-corrected-methodology-c1c2-fix) and `docs/verification-log.md`'s "C1/C2 remediation"
+section and Verification 7. That fix passes the full test suite and — stated as plainly as
+everything else in this section — **has now been run against a live Docker deployment**: 8 of 9
+attacks genuinely verified at their own claimed mechanism, A3 correctly and structurally
+`UNVERIFIED` by design, A10's cascade confirmed live. Getting there surfaced three more real bugs
+(a host-side import bug, a Docker-image packaging gap, a wrong Compose command against a one-shot
+container), each found by an actual run attempt and documented, not smoothed over.
