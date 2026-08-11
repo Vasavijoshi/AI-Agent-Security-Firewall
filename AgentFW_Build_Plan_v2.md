@@ -198,7 +198,7 @@ python attacks/run_all.py
 
 ## Results
 | Metric | Value |
-| Attack scenarios blocked | 7/7 |
+| Attack scenarios blocked | …/… |
 | Block rate (attack corpus, n=…) | …% |
 | False-positive rate (benign corpus, n=…) | …% |
 | PEP added latency p99 | … ms |
@@ -212,10 +212,47 @@ The "Design decisions" section is what senior engineers read. Give each one a se
 
 ---
 
-## 9. Resume bullets (fill brackets from your own test runs)
+## 9. Resume bullets (final, M4)
 
-- Built a Zero Trust enforcement proxy for LLM agents in Python/FastAPI that mediates every tool call through an 8-stage pipeline — identity, normalization, deterministic policy, threat intel, DLP, risk scoring, decision, audit.
-- Contained indirect prompt injection at the enforcement layer using session taint tracking, blocking data exfiltration in [7/7] scripted attack scenarios without relying on text-level injection detection.
-- Wrote an eval harness over [N] attack and [N] benign agent behaviours, reporting a [X]% block rate at a [Y]% false-positive rate, and used it as a CI gate against policy regressions.
-- Designed a signed policy-as-code engine with deterministic conflict resolution and a property-tested invariant guaranteeing risk scoring can only narrow a decision, never widen it.
-- Enforced non-bypassable egress with isolated Docker networks so the agent container has no route to the internet except through the enforcement proxy.
+Filled from real test runs only — see `docs/verification-log.md` for the exact commands and real
+output behind every number below, and `docs/hostile-review.md` for the caveats each one carries.
+Empty brackets (`[ ]`) mark numbers that were never actually measured — left empty on purpose
+(`AGENTFW_CONTEXT.md` §8: "every number in the README comes from an actual run... or the field
+stays TBD"), not filled with an estimate.
+
+- Built a Zero Trust enforcement proxy for LLM agents in Python/FastAPI that mediates every tool
+  call through an 8-stage pipeline — identity, normalization, deterministic policy, threat intel,
+  DLP, risk scoring, decision, audit.
+- Demonstrated containment of an indirectly injected agent action after the agent genuinely
+  complied with it, without relying on text-level injection detection: the model attempted an
+  unauthorized database read and a data-exfiltration POST after ingesting a malicious instruction
+  from fetched content, and both were denied by session-taint tracking and policy — reproduced
+  against both an in-process pipeline replay and a live Docker deployment.
+- Built an evaluation harness replaying a 66-attack/65-benign corpus through the real pipeline
+  code, measuring a 98.5% block rate at a 0.0% false-positive rate, and used it to find and fix two
+  real bugs in the evaluation harness itself (a state-reset ordering bug and a benchmark-clock
+  artifact) before trusting either number.
+- Designed a signed policy-as-code engine with deterministic conflict resolution and a
+  property-tested invariant guaranteeing risk scoring can only narrow a decision, never widen it.
+- Enforced non-bypassable egress with isolated Docker networks so the agent container has no route
+  to the internet except through the enforcement proxy — independently verified via live Docker
+  testing that both an allowlisted and a non-allowlisted destination fail identically at the
+  network layer, proving the block is indiscriminate rather than incidental.
+
+### Numbers considered for a bullet and deliberately left out
+
+- **Live Docker PEP end-to-end latency (p50/p95/p99):** `[ ]` — `evals/bench_pep.py` is built and
+  its HTTP-calling/stats mechanics smoke-tested, but never run against a real Docker deployment (no
+  Docker available in the environment these bullets were written in). Not converted from the
+  in-process pipeline latency (0.203 ms p50, measured, real, but a different thing — see
+  `docs/architecture.md` and the README's Results table for why the two numbers must never be
+  conflated).
+- **"9/9 attacks blocked, live Docker":** considered and rejected as a standalone bullet. The
+  aggregate denial is real (`docs/verification-log.md` Verification 5), but two of nine attacks'
+  individually-claimed mechanisms were not independently confirmed in that specific run (a
+  quarantine-cascade effect and a role-identity-mismatch artifact, both documented in
+  `docs/hostile-review.md` findings C1/C2) — not a clean enough claim for a single unqualified
+  resume line without the caveat undermining its brevity.
+- **"100% production attack prevention" / any absolute security claim:** never used. The corpus
+  proves 66 specific, hand-authored attack shapes are blocked — it does not prove coverage of
+  attack shapes outside that corpus, and no bullet claims otherwise.

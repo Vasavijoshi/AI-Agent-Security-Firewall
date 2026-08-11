@@ -7,9 +7,11 @@ the security property that output does or doesn't establish. Where a run found a
 the entry says so, how it was diagnosed, and what changed as a result — this file is a record of
 what was tested, not a claim that everything works.
 
-Four runs have happened so far. Three found a real problem; the fourth confirmed the project's
-central claim holds. That's the point of writing this down either way: a passing result recorded
-here is worth more than an assumed one, and a failing result gets fixed instead of argued about.
+Five runs have happened so far. Four found a real problem. That's the point of writing this down
+either way: a passing result recorded here is worth more than an assumed one, and a failing result
+gets fixed instead of argued about — including a fifth run (below) that reported a clean "9/9
+BLOCKED" on its face but, read carefully, exposed two real problems inside a genuinely passing
+result.
 
 ---
 
@@ -208,6 +210,91 @@ believed true but had never been run and reported back until now.
 
 ---
 
+---
+
+## Verification 5 — M3 attack suite, live Docker, 9/9 denied — with two real findings inside a real pass
+
+**What was being checked:** the two items the previous entry named as open — A4 (real multi-agent
+lateral movement) and A9 (raw `:8081` bypass listener) — plus, incidentally, all nine attacks at
+once via `attacks/run_all.py`.
+
+**Commands run** (from the host, via `docker exec` against a running container named `m3-agent`,
+and separately via `docker compose logs`):
+```
+docker exec -e PYTHONPATH=/app m3-agent python -m attacks.run_all
+docker compose logs pep --since 10m | Select-String "BYPASS_ATTEMPTED"
+docker exec -e PYTHONPATH=/app m3-agent python /app/evals/score.py
+```
+A separate attempt at `docker compose exec agent python -m attacks.a4` / `attacks.a9` (the
+originally recommended re-test, run standalone rather than via `run_all.py`) failed with
+`service "agent" is not running` — expected, not a bug: the `agent` service is a run-once batch job
+with no restart policy (`AGENTFW_CONTEXT.md` §9 M1), so once its own entrypoint scenario finishes
+and it exits, `docker compose exec` (which requires a running service) can no longer reach it. The
+`m3-agent` container reached via plain `docker exec` was evidently still up.
+
+**Headline result, real and worth stating plainly:** all nine attack requests were denied by the
+live PEP, reached over real Docker networking with a real, genuinely-issued Ed25519 token
+(`identity/issuer.py`'s real `/attest`, not a local replay) — `run_all.py` printed `9/9 BLOCKED`.
+`docker compose logs pep` independently shows two real `BYPASS_ATTEMPTED` events with real
+timestamps, `trace_id`s, and `"decision": "DENY"` — A9's attribution claim is now cleanly,
+completely confirmed: a raw request to `:8081` is denied, and that denial is independently visible
+in the PEP's own log, exactly as `pep/bypass_proxy.py`'s design claims.
+
+**Two real problems, found by reading the output carefully rather than accepting the summary line:**
+
+1. **Quarantine-cascade contamination of per-attack mechanism attribution.** `A1`'s live
+   `policy_id / reason` printed as `DEFAULT_DENY / AGENT_QUARANTINED` — not the `no_matching_rule`
+   default-deny A1 is built to demonstrate. `pep/pipeline.py`'s quarantine gate runs before stage 3
+   (policy) and is absolute: once a workload is quarantined, every subsequent call from it is
+   denied with `reason=AGENT_QUARANTINED` regardless of what stage 3–7 would have said. Because
+   `run_all.py` runs all nine attacks *in one process, against one persistent eventstore*, and
+   `agent`/`research_agent`'s workload was evidently already quarantined (from an earlier
+   iteration of the user's own debugging — `AGENT_QUARANTINED` appears starting on A1, the very
+   first call made in this run, which is itself circumstantial evidence that quarantine state
+   correctly persisted across whatever earlier run put it there), six of the nine attacks
+   (A1, A2, A3, A4, A5, A7) show `AGENT_QUARANTINED` as their live reason, not the specific
+   mechanism (`DEFAULT_DENY`, `dlp_block`, `DEFAULT_DENY_EAST_WEST`, `matched_explicit_deny`,
+   threat-intel) each one is individually built to demonstrate. The requests were still genuinely
+   denied — quarantine backstopping a specific gap is arguably a *stronger* result, not a weaker
+   one — but this run does not independently, cleanly confirm each attack's own claimed mechanism
+   the way a from-cold-state run would. Only A9 (presents no identity, can't be quarantined) and,
+   arguably, A6 (see below) are unaffected.
+2. **Role-identity mismatch: `try_live_pep_call()` cannot actually test a role other than whichever
+   container it's invoked from.** `identity/issuer.py`'s `/attest` is deliberately unauthenticated
+   and derives identity entirely from the calling connection's source IP
+   (`_lookup_caller_container()`) — by design, and correctly so (`AGENTFW_CONTEXT.md` §2: "the
+   agent is never asked to assert its own identity"). But `attacks/common.py`'s
+   `try_live_pep_call()` posts to `/attest` with no parameters at all, meaning the live token it
+   gets back reflects *whichever real container made the call* — never the `role`/`service` each
+   attack script's own Python variables claim to be testing. A3, A5, A2, and A8 are written as
+   `admin_agent`, `support_agent`, `finance_agent`, and `finance_agent` respectively; `admin_agent`
+   has no `AGENT_REGISTRY` entry at all (confirmed in `identity/issuer.py`), so A3's live branch
+   could only have reported `REAL_DOCKER_VERIFIED` because the *real* caller (running inside a
+   container actually registered as `research_agent`, going by A1/A4/A6/A7 succeeding under that
+   same identity) attested successfully as itself, not as `admin_agent` — the request that then
+   went to the PEP was genuinely denied, but it was evaluated under the real caller's real role,
+   not the label the script prints (`identity: role=admin_agent, ...`, `role=support_agent, ...`,
+   etc., a hardcoded description string that was never validated against what the live token
+   actually contained). A1, A4, A6, A7 (all written as `research_agent`) are not affected by this
+   specific issue, since that happens to be the real invoking container's real role.
+
+**Net assessment:** "9/9 blocked, live Docker" is true and should be reported as such — every
+request really was denied by the real deployed PEP. It should **not** be reported as "9 independent
+attacks, each confirming its own distinct claimed mechanism and identity, live" — that overstates
+what this run showed for six of the nine attacks (finding 1) and for four of the nine specifically
+(finding 2, overlapping with finding 1's set). A9's result is a full, clean, independent pass with
+no caveat. See the M4 hostile-review report for the severity assessment of both findings — neither
+was fixed as part of recording this entry, per this milestone's own rule against fixing
+hostile-review findings inside the milestone that found them.
+
+**Re-verified after any fix?** N/A — nothing was changed as a result of this entry; both findings
+are recorded as-is for a future milestone to address (e.g., release the quarantined workloads via
+`docker compose exec pep curl -X DELETE http://eventstore:8090/quarantine/<workload>` before a
+clean re-run, and/or run each attack script from inside the container matching its own claimed
+role rather than from one shared container).
+
+---
+
 ## Not yet verified via Docker
 
 Named explicitly, not left implicit — a missing entry here is not the same claim as a passing one:
@@ -221,28 +308,29 @@ Named explicitly, not left implicit — a missing entry here is not the same cla
 - **Trust-on-first-use pinning itself, end to end** — "second attestation with a different digest
   is refused" is verified by `tests/test_identity_issuer.py` against a scratch SQLite file, not yet
   against a real rebuilt image and a real second container.
-- **M3's A4 (real multi-agent lateral movement)** — `attacks/a4.py` attempts a real `/attest` +
-  `/v1/tool-call` round trip against the live `identity`/`pep` containers and reports `UNVERIFIED`
-  when it can't reach them, per its own module docstring; this has not yet been run against a real
-  deployment. Recommended re-test: `docker compose up -d` then
-  `docker compose exec agent python -m attacks.a4` — expect `verification_status:
-  REAL_DOCKER_VERIFIED` and `decision: DENY` / `policy_id: DEFAULT_DENY_EAST_WEST`.
-- **M3's A9 (raw `:8081` bypass listener)** — `attacks/a9.py` likewise reports `UNVERIFIED` when it
-  can't reach the live listener; not yet run against a real deployment. Recommended re-test:
-  `docker compose exec agent python -m attacks.a9`, then independently confirm attribution with
-  `docker compose logs pep | Select-String "BYPASS_ATTEMPTED"` — this is the same
-  not-yet-independently-re-verified gap Verification 1 already named for the post-fix logging path.
+- **A clean (non-quarantined, correct-container) re-run of A1–A8's own specific claimed
+  mechanisms, live** — see Verification 5's two findings. A9 does not need this; it already passed
+  cleanly. The other eight would need either a fresh eventstore (or the specific workloads
+  released from quarantine first) and, for A2/A3/A5/A8 specifically, actually running from inside
+  the container matching their claimed role (`finance-agent`/`support-agent`) rather than from a
+  single shared container, to independently confirm the claimed mechanism rather than the real
+  caller's own role.
 - **The dashboard against a live eventstore with real attack/agent traffic in it** — verified
   locally in this session against a manually seeded local `events/app.py` instance (real event
   schema, real FastAPI routes) with a real browser render confirming charts/tables/detail view all
   populate correctly, but not yet against the actual `docker compose up -d` deployment.
-- **Quarantine persistence across a real PEP restart** (pre-M3 round 3) — verified by
-  `tests/test_quarantine.py` against a simulated restart (clearing in-memory state), not yet
-  against an actual `docker compose restart pep`.
-- **Multi-agent lateral movement** (pre-M3 round 3/4) — `agent.invoke` targeting `finance-agent`
-  denied by east-west default-deny, live, via `docker compose logs agent` with
-  `AGENTFW_SCENARIO=m2_lateral_movement_attempt`. Commands were given; no output has been reported
-  back.
+- **Quarantine persistence across a real PEP restart** (pre-M3 round 3) — still not deliberately
+  tested (`docker compose restart pep`, check membership survives). Verification 5 above is
+  circumstantial, not a clean test of this specifically: `agent`/`research_agent` was observed
+  already quarantined at the very start of that run, meaning the entry survived from an earlier,
+  untracked session — consistent with persistence working, but no restart was deliberately
+  triggered and observed as part of that same test.
+- **Multi-agent lateral movement via `agent.invoke`, live, from a clean (non-quarantined) state**
+  (pre-M3 round 3/4) — the east-west code path itself was reached live in Verification 5 (A4), but
+  the workload was already quarantined by then, so the live result shown was the quarantine gate,
+  not `DEFAULT_DENY_EAST_WEST` specifically. A local (non-Docker) integration test already confirms
+  the east-west logic itself (`tests/test_east_west.py`); a clean live confirmation of this exact
+  path is still open.
 - **East-west DLP coverage and the compiler's unknown-workload check** (this session, item 2) —
   both are exercised locally (pytest, or `python -m policy.compiler`, neither requiring Docker);
   a Docker run isn't the missing piece for these two specifically, but they've never been part of
