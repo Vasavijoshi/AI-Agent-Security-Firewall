@@ -28,7 +28,7 @@ The workflow uses `LLM_PROVIDER=mock`, so the CI suite requires no external API 
 
 ---
 
-## Why this exists
+## Motivation and Problem Statement
 
 An LLM agent's tool calls are chosen at runtime by a component that can be talked into anything —
 a prompt injection riding inside a web page, a tool result, an uploaded document. Two assumptions
@@ -89,7 +89,7 @@ docker compose run --rm -T --no-deps -v "${PWD}:/app" -w /app --entrypoint pytho
 # Dashboard:
 # http://localhost:8501
 ```
-*Host-Side Attack Orchestration:** the C1/C2 fix
+**Host-Side Attack Orchestration:** the C1/C2 fix
 (see [Attack verification, corrected methodology](#attack-verification-corrected-methodology-c1c2-fix))
 made it dispatch each attack to the *specific* Compose service that genuinely attests as the role
 that attack needs (`docker compose run --rm <service> python -m attacks.aN`). This requires the
