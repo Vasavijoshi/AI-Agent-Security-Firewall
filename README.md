@@ -28,7 +28,7 @@ The workflow uses `LLM_PROVIDER=mock`, so the CI suite requires no external API 
 
 ---
 
-## Motivation and Problem Statement
+## Problem Statement
 
 An LLM agent's tool calls are chosen at runtime by a component that can be talked into anything —
 a prompt injection riding inside a web page, a tool result, an uploaded document. Two assumptions
