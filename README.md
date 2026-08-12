@@ -89,8 +89,8 @@ docker compose run --rm -T --no-deps -v "${PWD}:/app" -w /app --entrypoint pytho
 # Dashboard:
 # http://localhost:8501
 ```
-##Host-Side Attack Orchestration: the C1/C2 fix
-(see [Attack verification, corrected methodology](#attack-verification-corrected-methodology-c1c2-fix))
+### Host-Side Attack Orchestration:
+The C1/C2 fix (see [Attack verification, corrected methodology](#attack-verification-corrected-methodology-c1c2-fix))
 made it dispatch each attack to the *specific* Compose service that genuinely attests as the role
 that attack needs (`docker compose run --rm <service> python -m attacks.aN`). This requires the
 `docker` CLI and Compose project context to be available to the process running `run_all.py` itself;
