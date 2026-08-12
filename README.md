@@ -44,15 +44,6 @@ The workflow uses `LLM_PROVIDER=mock`, so the CI suite requires no external API 
 
 ---
 
-## 30-second demo
-
-[GIF PLACEHOLDER — 30-second AgentFW demo]
-
-*What you'll see once this is recorded: an agent gets an indirect prompt injection from a page it
-fetched, complies with it (tries to read the customer DB and exfiltrate it), and AgentFW denies
-both actions — the model got hijacked, the firewall didn't care.*
-
----
 
 ## Why this exists
 
@@ -172,14 +163,17 @@ mismatch).
 | A9 (raw `:8081` bypass listener) | Denied live, clean pass, no caveat, both runs |
 | A9 `BYPASS_ATTEMPTED` attribution in PEP logs | Independently confirmed both runs — real log lines, real `trace_id`s, `docker compose logs pep` |
 
-**Run 3 (corrected methodology, per-role dispatch — the C1/C2 fix) — genuinely verified, not just
-denied:**
+### Run 3 (corrected methodology, per-role dispatch — genuinely verified, not just denied):
 
 | Metric | Value |
 |---|---|
 | A1–A9 genuinely verified (correct role + own mechanism confirmed) | **8 / 9** [^c1c2-fix] |
-| A3 (admin_agent — no deployed compose service) | `UNVERIFIED`, structurally, by design — not a caveat, the correct answer |
-| A10 (deliberate quarantine-cascade demonstration) | `demonstrates_cascade: true` — confirmed live |
+| A3 (admin_agent — no deployed Compose service) | `UNVERIFIED`, structurally, by design — not a caveat, the correct answer |
+| A10 (deliberate quarantine-cascade demonstration) | Attempted live, but **not confirmed** in the latest run [^a10] |
+
+A10 is intentionally treated separately from the A1–A9 verification count. Its latest live run showed both calls being denied by `AGENT_QUARANTINED`; because the first call did not demonstrate its own intended threat-intelligence mechanism, the cascade could not be credited as independently confirmed. This is reported as a mechanism mismatch rather than converted into a successful cascade claim. [^a10]
+
+[^a10]: The latest live A10 run returned `demonstrates_cascade: false`. Call 1 was denied with `AGENT_QUARANTINED` instead of its expected threat-intelligence mechanism, so `mechanism_match` was false. Call 2 was also denied with `AGENT_QUARANTINED`. The run therefore demonstrates quarantine state was present, but does not prove the intended cascade sequence.
 
 See [Attack verification, corrected methodology](#attack-verification-corrected-methodology-c1c2-fix) below and `docs/verification-log.md`'s Verification 7 for the full real command
 output, including the three real bugs found and fixed before this run succeeded.
@@ -303,42 +297,49 @@ limitations.
 
 ## Attack verification, corrected methodology (C1/C2 fix)
 
-The two footnotes above describe real problems with *how* A1–A9 were run in Verifications 5 and 6
-— not with whether the underlying enforcement worked. `attacks/run_all.py` and `attacks/common.py`
-were rewritten to fix the execution model those two runs exposed:
+The two footnotes above describe real problems with how A1–A9 were run in Verifications 5 and 6
+—not with whether the underlying enforcement worked. `attacks/run_all.py` and `attacks/common.py`
+were rewritten to fix the execution model those runs exposed:
 
-- **Each attack is now dispatched to the compose container that can genuinely attest as the role
-  it requires** (`docker compose run --rm <service> python -m attacks.aN` — `research_agent`→`agent`,
-  `finance_agent`→`finance-agent`, `support_agent`→`support-agent`; `docker compose run`, not
-  `exec`, because those three are one-shot batch jobs with no long-running container for `exec` to
-  target once their default scenario finishes — found by an actual run attempt), instead of all
-  nine running from one shared container. The attested role is cryptographically verified (a real
-  `POST /attest`, `GET /public-key`, and Ed25519 signature check) before a result is ever reported
-  `REAL_DOCKER_VERIFIED` — a role mismatch reports `UNVERIFIED` with an explicit error instead of a
-  silent pass. `admin_agent` (A3) has no compose service and none was invented for it; A3 is
-  structurally `UNVERIFIED` for its live path, honestly, by design.
-- **Quarantine is cleared and verified empty immediately before each of A1–A9**, using only
-  `events/app.py`'s existing, real, public `GET`/`DELETE /quarantine` routes — the same admin
-  surface Verification 6 already exercised by hand. No eventstore internals are touched.
-- **Every attack now asserts its own expected decision/reason** and fails loudly — with an explicit
-  MISMATCH banner and a nonzero exit code — if a real, correctly-identified live result doesn't
-  match. `AGENT_QUARANTINED` standing in for a scenario's own mechanism is a mismatch now, not a
-  quiet pass folded into a "9/9 blocked" headline.
-- **A10, a tenth script, demonstrates the quarantine cascade on purpose**: two calls on the same
-  workload, quarantine cleared once before both and deliberately not cleared between them. It is
-  never counted toward the nine independently-verified attacks, and its own report says so
-  explicitly every time it runs.
+- **Each attack is dispatched to the Compose service that can genuinely attest as the role it
+  requires** (`research_agent` → `agent`, `finance_agent` → `finance-agent`,
+  `support_agent` → `support-agent`). The attacks use `docker compose run --rm <service>
+  python -m attacks.aN` because these services are one-shot workloads rather than persistent
+  containers. The attested role is cryptographically verified using the real identity service
+  before a result can be reported as `REAL_DOCKER_VERIFIED`. A role mismatch is reported as
+  `UNVERIFIED` rather than silently accepted. `admin_agent` (A3) has no deployed Compose service,
+  so A3 remains structurally `UNVERIFIED` for its live path by design; no artificial service was
+  created just to make the test pass.
 
-**This fix has now been run against a live Docker deployment, for real** (`docs/verification-log.md`'s Verification 7): 8 of 9 attacks (all but A3, which is structurally
-`UNVERIFIED` by design) genuinely attested as their required role and showed `mechanism_match:
-true` — the exact reason each scenario claims, not just "denied." A10 confirmed the cascade live:
-call 1 denied by its own mechanism, call 2 denied specifically by `AGENT_QUARANTINED`. Getting
-there required fixing three more real bugs the code review above didn't catch — a host-side
-dependency-import bug, a Docker-image packaging gap, and a wrong Compose command against a one-shot
-container — each found by an actual run attempt, all documented in Verification 7 rather than
-smoothed over. "Eight of nine attacks, each independently verified live at its own claimed
-mechanism, with the ninth correctly and structurally unable to be" is now a claim backed by a real,
-observed, reproducible result — not just code built to support one.
+- **Quarantine is cleared and verified empty immediately before each independent attack A1–A9**,
+  using the existing public quarantine-management endpoints. This prevents an earlier attack's
+  quarantine state from becoming an accidental prerequisite for a later attack.
+
+- **Every attack checks its own expected decision and reason.** A correctly blocked request must be
+  blocked by the mechanism that attack is intended to demonstrate. If a different mechanism such
+  as `AGENT_QUARANTINED` takes over first, the result is reported as a mechanism mismatch rather
+  than being counted as a successful verification.
+
+- **A10 is a separate quarantine-persistence demonstration, not an independent attack.** It
+  deliberately performs two calls on the same workload without clearing quarantine between them.
+  Its purpose is to test whether an existing quarantine state persists into a subsequent request;
+  it is never included in the A1–A9 independent-verification count.
+
+**Current live verification status:** 8 of the 9 independent attacks (A1, A2, A4, A5, A6, A7, A8,
+and A9) have been genuinely verified against the deployed Docker stack at their claimed mechanism,
+with `mechanism_match: true`. A3 is intentionally `UNVERIFIED` because the required
+`admin_agent` workload does not exist in the deployed Compose topology. This is a structural
+limitation of the current deployment, not a fabricated pass.
+
+A10 was also executed against the live Docker stack, but its latest run did **not** confirm the
+intended quarantine cascade: both calls were denied with `AGENT_QUARANTINED`, while the first call
+was expected to be denied by its own threat-intelligence mechanism. Therefore A10 is documented as
+an attempted quarantine-cascade demonstration rather than claimed as independently confirmed
+evidence. The result is intentionally reported as a mechanism mismatch instead of being counted
+as a successful cascade verification.
+
+This distinction is deliberate: the project reports what the deployed system actually demonstrated,
+rather than converting every `DENY` response into a successful security-test result.
 
 ---
 
