@@ -89,7 +89,7 @@ docker compose run --rm -T --no-deps -v "${PWD}:/app" -w /app --entrypoint pytho
 # Dashboard:
 # http://localhost:8501
 ```
-**Host-Side Attack Orchestration:** the C1/C2 fix
+##Host-Side Attack Orchestration: the C1/C2 fix
 (see [Attack verification, corrected methodology](#attack-verification-corrected-methodology-c1c2-fix))
 made it dispatch each attack to the *specific* Compose service that genuinely attests as the role
 that attack needs (`docker compose run --rm <service> python -m attacks.aN`). This requires the
@@ -298,7 +298,7 @@ limitations.
 
 ---
 
-## Attack verification, corrected methodology (C1/C2 fix)
+## Attack verification
 
 The two footnotes above describe real problems with how A1–A9 were verified in Verifications 5 and 6
 —not necessarily failures of the underlying enforcement. Those runs demonstrated live Docker denial,
