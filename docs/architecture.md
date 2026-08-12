@@ -5,7 +5,7 @@ production system (SPIFFE/SPIRE, Kubernetes, Terraform, multicloud). This repo b
 that — see `AGENTFW_CONTEXT.md` §1 for the hard constraints. Where the two disagree, the context
 file wins and this document follows it.
 
-## The problem, in one sentence
+## Problem Statement
 
 A conventional workload's egress policy works because identity is a proxy for network location and
 its destination set is static. An LLM agent breaks both: many roles can share one process/IP, and
@@ -13,14 +13,14 @@ the agent picks its destination at runtime from content an attacker may control 
 page, a tool result). AgentFW enforces deny-by-default egress on a workload whose destination set
 is chosen at runtime by a component that may be adversarial.
 
-## Why this is a firewall, not an API gateway
+## Why AgentFW Is an Egress Firewall
 
 An API gateway asks *"may this caller reach my service?"* — it trusts the thing behind it. AgentFW
 asks *"may this workload reach the world?"* and does not trust the agent it is attached to. The
 agent is not AgentFW's client; it is AgentFW's subject of enforcement. That is the egress-firewall
 relationship, not the ingress one.
 
-## The 8-stage pipeline
+## Enforcement Pipeline
 
 Every tool call the agent makes is forced through the PEP (Policy Enforcement Point) and evaluated
 in this fixed order. The order is chosen for cost and short-circuiting, not aesthetics — each stage
@@ -62,7 +62,7 @@ prunes work for the ones after it.
                                unauditable.
 ```
 
-## The decision lattice
+## The Decision Lattice
 
 ```
 DENY  <  QUARANTINE  <  REQUIRE_APPROVAL  <  RATE_LIMIT  <  ALLOW_REDACTED  <  ALLOW
@@ -72,7 +72,7 @@ Risk and any future ML scorer can only move a decision leftward — a determinis
 is final and nothing downstream can promote it. This is the monotonicity invariant, and it is
 property-tested in `tests/test_invariants.py`.
 
-## Docker networking — the non-bypassability proof
+## Network Isolation and Non-Bypassability
 
 ```
 ┌─────────────────── agent-net  (internal: true — NO route to the internet) ───────────────────┐
@@ -114,23 +114,20 @@ first place. `docker compose exec agent curl https://example.com` must fail at t
 that command is the whole non-bypassability demo, and it costs one line in `docker-compose.yml`,
 not three weeks of Kubernetes NetworkPolicy.
 
-## Identity (trimmed from the SPIFFE/SPIRE design)
-
+## Identity and Workload Attestation
 The full architecture doc specifies SPIFFE URIs, mTLS, and a CA service — that's Kubernetes/cloud
 infrastructure this repo explicitly excludes. What's kept: **the agent never holds a tool
 credential.** `identity/issuer.py` issues short-lived Ed25519-signed tokens; the PEP verifies the
 signature and injects the real credential only after a policy check passes. A prompt injection
 still can't exfiltrate a credential the agent never had.
 
-## Policy (trimmed from YAML→OPA/Rego)
-
+## Policy Architecture
 Policy is authored in YAML (`policy/bundles/default.yaml`) because it's reviewed by humans far more
 often than it's written. It compiles to a plain Python decision tree (`policy/engine.py`,
 `policy/compiler.py`) instead of an OPA/Rego backend — no extra service to run, and every line is
 one the author can explain without reference to an external DSL.
 
-## Why SQLite for the event store
-
+## Event Store Selection: SQLite
 `AGENTFW_CONTEXT.md` leaves the choice open ("postgres or sqlite — pick one and say why"). This
 repo uses SQLite:
 
@@ -159,7 +156,7 @@ what an adversarial agent can do:
 See `AGENTFW_CONTEXT.md` §10 for the full A6 scenario — the injection succeeds at the model layer
 and is contained at the enforcement layer. That is the project's headline result.
 
-## M1 implementation notes — what's real vs. a documented stand-in
+## Implementation Status and Known Simplifications
 
 As of the pre-M3 ruling, all 8 pipeline stages execute for real: identity (Ed25519 tokens +
 Docker-socket attestation + container-binding check), normalization (`pep/normalize.py`),
