@@ -1,38 +1,20 @@
 # AgentFW — Zero Trust enforcement for LLM agents
 
-> An LLM agent can be talked into anything. This is the layer that stops it from *doing* anything
-> it shouldn't.
+> An LLM agent can be talked into anything. This is the layer that stops it from *doing* anything it shouldn't.
 
-**What it is:** a Policy Enforcement Point (PEP) that sits between an LLM agent and every tool it
-calls — HTTP requests, database queries, file reads, emails, and calls to other agents — and
-mediates each one through an 8-stage pipeline (identity, normalization, policy, threat intel, DLP,
-risk scoring, decision, audit log) before anything executes.
+**What it is:** a Policy Enforcement Point (PEP) that sits between an LLM agent and every tool it calls — HTTP requests, database queries, file reads, emails, and calls to other agents — and mediates each one through an 8-stage enforcement pipeline (identity, normalization, policy, threat intel, DLP, risk scoring, decision, audit log) before anything executes.
 
-**Who it protects:** whoever deploys the agent. Not the agent's user, not the agent itself — the
-organization that would be liable if the agent got talked into leaking data or reaching somewhere
-it shouldn't.
+**Who it protects:** whoever deploys the agent. Not the agent's user, not the agent itself — the organization that would be liable if the agent got talked into leaking data or reaching somewhere it shouldn't.
 
-**What classic egress firewalls assume, and why it breaks for agents:** a conventional firewall
-keys policy on IP and a static destination set — it works because identity is a proxy for network
-location and "who's allowed to go where" doesn't change request to request. An LLM agent breaks
-both assumptions: several roles can share one process/IP, and the agent picks its destination *at
-runtime*, from content an attacker may control (a fetched web page, a tool result). A firewall that
-only knows IPs and a fixed allowlist has nothing to say about that.
+**What classic egress firewalls assume, and why it breaks for agents:** a conventional firewall keys policy on IP and a static destination set — it works because identity is a proxy for network location and "who's allowed to go where" doesn't change request to request. An LLM agent breaks both assumptions: several roles can share one process/IP, and the agent picks its destination *at runtime*, from content an attacker may control (a fetched web page, a tool result). A firewall that only knows IPs and a fixed allowlist has nothing to say about that.
 
-**What AgentFW changes:** policy is keyed on cryptographically-attested workload identity, not IP;
-every request is normalized and inspected before being evaluated, not just port-and-address
-matched; and the agent has no network path anywhere except through the PEP — enforced by Docker
-network topology, not by the agent's own good behavior.
+**What AgentFW changes:** policy is keyed on cryptographically-attested workload identity, not IP; every request is normalized and inspected before being evaluated, not just port-and-address matched; and the agent has no network path anywhere except through the PEP — enforced by Docker network topology, not by the agent's own good behavior.
 
-**Is this production-ready?** No, and this README says exactly where it isn't — see
-[Limitations](#limitations). It's a portfolio project built to survive a real security review, not
-a pitch deck.
+**Is this production-ready?** No, and this README says exactly where it isn't — see [Limitations](#limitations). It's a portfolio project built to survive a real security review, not a pitch deck.
 
 ---
 
 ## CI
-
-[![CI](https://github.com/Vasavijoshi/AI-Agent-Security-Firewall/actions/workflows/ci.yml/badge.svg)](https://github.com/Vasavijoshi/AI-Agent-Security-Firewall/actions/workflows/ci.yml)
 
 **Honest status:** the workflow (`.github/workflows/ci.yml`) is real and currently passing. It runs three jobs on every push and pull request:
 
@@ -41,9 +23,10 @@ a pitch deck.
 - **Test** — runs the full `pytest tests/ -v` suite after lint and policy checks pass
 
 The workflow uses `LLM_PROVIDER=mock`, so the CI suite requires no external API key.
-
 ---
 
+
+---
 
 ## Why this exists
 
@@ -58,61 +41,76 @@ a classic egress firewall makes both break:
    agent: the agent picks its own destination at runtime, often from content it just read — a
    fetched page telling it to POST somewhere is not a hypothetical, it's `A6` below.
 
-AgentFW enforces deny-by-default egress on a workload whose destination set is chosen at runtime by
-a component that may be adversarial. See [docs/architecture.md](docs/architecture.md) for the full
-design.
+AgentFW applies zero-trust egress enforcement to workloads whose tool destinations are chosen at
+runtime by a component that may be adversarial. Every tool call is evaluated against the workload's
+attested identity and the request's normalized destination, action, data classification, session
+state, and other enforcement signals before execution.
+
+See [docs/architecture.md](docs/architecture.md) for the full design.
 
 ---
-
 ## Run it
 
-### Fast demo (no Docker, no API key, ~30 seconds)
+### Quick start (no Docker, no API key)
 
 ```bash
-git clone <repo> && cd agentfw
-python -m venv .venv && source .venv/bin/activate   # or .venv\Scripts\activate on Windows
-pip install -r requirements.txt
-python -m attacks.run_all      # 9 attacks, in-process pipeline replay where Docker isn't reachable
-python -m evals.score          # real measured numbers: block rate, false-positive rate, latency
-```
+git clone https://github.com/Vasavijoshi/AI-Agent-Security-Firewall.git
+cd AI-Agent-Security-Firewall
 
+python -m venv .venv
+source .venv/bin/activate                    # Windows: .venv\Scripts\activate
+
+pip install -r requirements.txt
+
+python -m attacks.run_all
+python -m evals.score
+```
 ### Full verification (Docker, ~5 minutes)
 
-```bash
+```
 cp .env.example .env                    # works with NO API key, using the mock LLM
 docker compose up -d
-docker compose ps                       # all services should show healthy
-curl http://localhost:8501              # dashboard reachable
+docker compose ps                       # identity, pep, eventstore, and dashboard should be up/healthy
 
-# M3/M4 attack suite — run from the HOST with only `docker` on PATH, NO project dependencies
-# required (see below for why this changed from a `docker compose exec agent ...` invocation):
+# Dashboard:
+# http://localhost:8501
+
+# M3/M4 attack suite — run from the HOST.
+# The orchestrator uses the Docker CLI to dispatch each attack to the
+# Compose service that can genuinely attest as the role required by that attack.
 python -m attacks.run_all
 
-# Evaluation (in-process pipeline replay — see Results table for exactly what this measures):
+# Evaluation (in-process pipeline replay):
 docker compose run --rm agent python -m evals.score
 
 # Live PEP performance benchmark (the actual deployed /v1/tool-call endpoint, not a replay):
-docker compose run --rm support-agent python -m evals.bench_pep --requests 1000
+docker compose run --rm -T --no-deps -v "${PWD}:/app" -w /app --entrypoint python support-agent -m evals.bench_pep --requests 1000 --concurrency 10 --warmup 50 --workload both
 
-# Dashboard: http://localhost:8501
+# Dashboard:
+# http://localhost:8501
 ```
+*Host-Side Attack Orchestration:** the C1/C2 fix
+(see [Attack verification, corrected methodology](#attack-verification-corrected-methodology-c1c2-fix))
+made it dispatch each attack to the *specific* Compose service that genuinely attests as the role
+that attack needs (`docker compose run --rm <service> python -m attacks.aN`). This requires the
+`docker` CLI and Compose project context to be available to the process running `run_all.py` itself;
+no current service container provides that orchestration context.
 
-**Why `attacks/run_all.py` now runs from the HOST, not from inside a container:** the C1/C2 fix
-(see [Attack verification, corrected methodology](#attack-verification-corrected-methodology-c1c2-fix)) made it dispatch each attack to the *specific* compose service that
-genuinely attests as the role that attack needs (`docker compose run --rm <service> python -m
-attacks.aN`) — which requires the `docker` CLI and compose project context to be available to the
-process running `run_all.py` itself. No current service container has that. Run it directly on the
-host, with `docker compose up -d` already running; it shells out into the right container per
-attack automatically, including for A4 and A9, which still specifically need the `agent-net` route
-(reached the same way as before, just orchestrated from outside now instead of from within a
-single container). **It deliberately needs no project Python dependencies on the host** — only
-`docker` on PATH — since the orchestrator itself never imports `attacks`/`pep`/`identity` code; it
-only shells out and parses JSON (a real bug on the first live attempt, fixed: see
-`docs/verification-log.md`'s Verification 7). If `docker`/`docker compose` aren't reachable from
-wherever it's invoked, `run_all.py` correctly falls back to the in-process, no-Docker mode (which
-*does* need `pip install -r requirements.txt`) instead of silently failing.
+Run it directly on the host, with `docker compose up -d` already running. It shells out to the
+appropriate container for each attack and parses the resulting JSON, including A4 and A9, which
+specifically exercise the `agent-net` route.
 
-If any of this doesn't work on a clean machine with no API key and no cloud account, that's a bug.
+The orchestrator deliberately does not require the project's Python dependencies for its Docker
+dispatch path — it only requires Python and the `docker` CLI — because it does not import the
+project's `attacks`, `pep`, or `identity` implementation modules. It only launches the appropriate
+Compose commands and parses their JSON results. This host-side execution model fixed a real bug
+found during the first live attempt; the issue and its resolution are documented in
+[`docs/verification-log.md`](docs/verification-log.md)'s Verification 7.
+
+If `docker` or `docker compose` cannot be reached from where `run_all.py` is invoked, the runner
+falls back to the in-process, no-Docker mode instead of silently treating the run as live Docker
+verification. That fallback does require the project dependencies installed with
+`pip install -r requirements.txt`.
 
 ---
 
@@ -147,21 +145,26 @@ these numbers. See footnote [^harness] on how this was corrected mid-milestone.
 
 ### Docker attack verification — live deployment
 
-**Runs 1 and 2 (previous execution model) — what they actually proved, stated precisely:**
-`docker compose exec` against a running stack denied all nine attacks in aggregate, twice,
-independently. They did **not** independently confirm each attack's own specific claimed
-mechanism — see `docs/verification-log.md`'s Verifications 5 and 6 for the full real command output
-and the two methodology caveats this table's footnotes summarize (quarantine cascade; role/identity
-mismatch).
+The final corrected verification run is the authoritative result for A1–A9. Earlier live runs are
+retained in `docs/verification-log.md` as methodology history because they exposed real execution
+problems that were subsequently fixed.
 
 | Metric | Value |
 |---|---|
-| Attacks tested | 9 (A1–A9) |
-| Attacks denied, live Docker (run 1, `run_all.py`, one process) | 9 / 9 [^quarantine][^identity-mismatch] |
-| Attacks denied, live Docker (run 2, nine independent `docker exec` invocations) | 9 / 9 [^quarantine][^identity-mismatch] |
-| A4 (real multi-agent lateral movement) | Reached live, genuinely denied [^quarantine] |
-| A9 (raw `:8081` bypass listener) | Denied live, clean pass, no caveat, both runs |
-| A9 `BYPASS_ATTEMPTED` attribution in PEP logs | Independently confirmed both runs — real log lines, real `trace_id`s, `docker compose logs pep` |
+| Independent attacks tested | 9 (A1–A9) |
+| Independently verified at the claimed mechanism | **8 / 9** |
+| A1, A2, A4–A9 | `REAL_DOCKER_VERIFIED`, `mechanism_match: true` |
+| A3 (`admin_agent`) | `UNVERIFIED` — no deployed Compose service can genuinely attest as `admin_agent` |
+| A10 | Separate quarantine-cascade demonstration; **not counted** toward the A1–A9 total |
+
+The earlier verification runs did deny all nine attacks over live Docker, but quarantine state and
+role/identity mismatches prevented those runs from independently proving each attack's own claimed
+mechanism. Those runs are documented as historical verification evidence rather than used to
+inflate the final independent-verification count.
+
+A9's raw `:8081` bypass attribution was independently observed in both earlier runs through real
+PEP log entries and `trace_id`s; the final corrected methodology preserves A9 as an independently
+verified attack.
 
 ### Run 3 (corrected methodology, per-role dispatch — genuinely verified, not just denied):
 
@@ -213,7 +216,7 @@ Both workloads returned `success: 1000, deny: 0, error: 0` — this measures the
 | log | 69.5336 / 234.1504 / 676.4877 | 62.5755 / 263.8114 / 595.2960 |
 | **total** (server-reported, sum of stages) | **70.0759 / 234.6148 / 677.0141** | **63.4381 / 264.4298 / 596.0998** |
 
-**How to read this table — two different numbers, do not conflate them:**
+**Interpreting the Evaluation Results:**
 - **End-to-end HTTP latency** is measured client-side (`time.perf_counter()` around the full
   request), and includes real network/Docker/HTTP-stack overhead. This is what a caller of the PEP
   actually experiences. It is **not** "PEP processing latency."
@@ -297,9 +300,11 @@ limitations.
 
 ## Attack verification, corrected methodology (C1/C2 fix)
 
-The two footnotes above describe real problems with how A1–A9 were run in Verifications 5 and 6
-—not with whether the underlying enforcement worked. `attacks/run_all.py` and `attacks/common.py`
-were rewritten to fix the execution model those runs exposed:
+The two footnotes above describe real problems with how A1–A9 were verified in Verifications 5 and 6
+—not necessarily failures of the underlying enforcement. Those runs demonstrated live Docker denial,
+but quarantine state and role/identity mismatches prevented them from independently confirming each
+attack's own claimed mechanism. `attacks/run_all.py` and `attacks/common.py` were rewritten to fix
+the execution model those runs exposed:
 
 - **Each attack is dispatched to the Compose service that can genuinely attest as the role it
   requires** (`research_agent` → `agent`, `finance_agent` → `finance-agent`,
@@ -345,11 +350,10 @@ rather than converting every `DENY` response into a successful security-test res
 
 ## Benchmark methodology
 
-`evals/bench_pep.py` measures the **real deployed `/v1/tool-call` endpoint** over live Docker
-networking — end-to-end HTTP latency, not the in-process replay `evals/score.py` measures. Run
-from inside the `support-agent` container specifically (`docker compose run --rm support-agent
-python -m evals.bench_pep`), because — see the identity finding above — `/attest` can only ever
-attest as whichever container actually calls it.
+`evals/bench_pep.py` measures the **real deployed** **`/v1/tool-call`** **endpoint** over live Docker
+networking — end-to-end HTTP latency, not the in-process replay measured by `evals/score.py`. The
+benchmark is executed from a temporary `support-agent` Compose container so that the request
+originates inside the deployed Docker network and can genuinely attest as `support_agent`.
 
 - **Workloads:** two, both using `support_agent`'s own real charter so the comparison is
   apples-to-apples (same role, same baseline considerations):
@@ -358,37 +362,62 @@ attest as whichever container actually calls it.
   - **DLP-not-triggered** — `email.send` to the approved helpdesk address (`R-SUPPORT-002` has no
     `inspect` flag, and `email.send` never produces an `fqdn`, so the stage-5 gate — `inspect` or
     external destination or `agent.invoke` — is never true).
+
 - **Load:** 1000 requests per workload by default (`--requests`), concurrency 10 by default
-  (`--concurrency`) — a controlled, realistic level for a demo-scale deployment, not a stress test;
-  the objective is reproducibility, not a dramatic number.
-- **Warm-up:** 50 requests by default (`--warmup`), discarded before measurement starts — first
-  requests on a fresh connection pool pay TCP/TLS-setup costs a steady-state client doesn't.
-- **Token reuse:** attested once per run, reused for every request in that run — matching how a
-  real deployed agent behaves (`agent/tools.py`'s `_attest()` caches its token for the process
-  lifetime); re-attesting per call would benchmark `identity/issuer.py`'s Docker-socket lookup
-  instead of the PEP path this benchmark is about.
-- **Denied requests are counted, not discarded.** A `DENY`/`QUARANTINE`/`REQUIRE_APPROVAL`
-  response still executed the full pipeline server-side. Only genuine transport failures
-  (connection refused, timeout) are classified as errors.
+  (`--concurrency`) — a controlled, demo-scale workload rather than a stress test. The objective
+  is reproducibility and a meaningful comparison between the two request paths, not a maximum
+  throughput claim.
+
+- **Warm-up:** 50 requests per workload by default (`--warmup`), discarded before measurement
+  starts. This allows the benchmark to separate initial request/setup effects from the measured
+  workload.
+
+- **Token reuse:** the agent is attested once per benchmark run and the resulting token is reused
+  for requests in that run, matching the deployed agent behavior where `agent/tools.py`'s
+  `_attest()` caches its token for the process lifetime. Re-attesting for every request would
+  measure additional identity-service work rather than the PEP request path this benchmark is
+  intended to measure.
+
+- **Denied requests are counted, not discarded.** A `DENY`, `QUARANTINE`, or `REQUIRE_APPROVAL`
+  response is still a completed PEP decision and is not classified as a transport error. Only
+  genuine transport failures, such as connection errors or timeouts, are classified as errors.
+
 - **Per-stage timing** comes directly from the PEP's own `/v1/tool-call` response body
-  (`latency_ms`, already returned for every call — no new instrumentation was needed) — real
-  server-measured per-stage numbers, not derived or estimated client-side.
-- **Docker/network overhead is kept in the number, not subtracted.** The reported latency is
-  client-measured, wall-clock, end-to-end.
+  (`latency_ms`), which reports the server-measured duration of each pipeline stage. These values
+  are not estimated from the client-side measurements.
+
+- **Docker/network overhead is kept in the end-to-end number, not subtracted.** The reported
+  end-to-end latency is measured client-side as wall-clock HTTP latency from the benchmark process
+  to the deployed PEP endpoint and therefore includes the Docker/WSL2 networking overhead present
+  in this environment.
+
+- **The reported benchmark measures the allowed request paths.** The measured workloads returned
+  `success: 1000, deny: 0, error: 0` for each workload in the recorded run. This benchmark therefore
+  should not be interpreted as a stress test, a production capacity claim, or a measurement of
+  denied-request latency.
+
 - **Known limitations of this methodology:** a single-machine Docker-under-WSL2 deployment is not
-  representative of a production multi-host network; the FastAPI route handling `/v1/tool-call` is
-  a synchronous `def`, so concurrent requests are served from Starlette's thread pool, not a
-  fully async pipeline — worth knowing when interpreting concurrency scaling; no repeated-run
-  variance has been collected (the numbers in [Results](#results) are from one run; the
-  methodology has been exercised once, not validated for run-to-run stability).
+  representative of a production multi-host network; the FastAPI route handling `/v1/tool-call`
+  is a synchronous `def`, so concurrent requests are served through Starlette's thread pool
+  rather than a fully asynchronous request handler; and no repeated-run variance has been
+  collected. The latency numbers in [Results](#results) therefore represent one recorded run and
+  have not been validated for run-to-run stability.
+
 - **What was actually run, once, for real, this milestone:** 1000 requests × 2 workloads ×
-  concurrency 10, warm-up 50 discarded per workload, against a live `docker compose` deployment
-  under WSL2 — see [Results](#results) above for the numbers and
-  `docs/verification-log.md`'s Verification 6 for the full real command output. This is a
-  **live-deployment measurement** of the actual `/v1/tool-call` endpoint — distinct from the
-  workload definitions above (authored by this project, not sampled from production traffic) and
-  distinct from `evals/score.py`'s **synthetic, in-process replay methodology** used for the
-  security-evaluation numbers elsewhere in this README, which never makes a real network call.
+  concurrency 10, with 50 warm-up requests discarded per workload, against a live Docker Compose
+  deployment under WSL2, with zero transport errors. The recorded command was:
+
+  ```bash
+  docker compose run --rm -T --no-deps \
+    -v "$PWD:/app" \
+    -w /app \
+    --entrypoint python \
+    support-agent \
+    -m evals.bench_pep \
+    --requests 1000 \
+    --concurrency 10 \
+    --warmup 50 \
+    --workload both
 
 ---
 
@@ -442,162 +471,173 @@ full 8-stage pipeline diagram and the reasoning behind each element.
 
 ## Design decisions
 
-Five decisions, each a real trade-off made in this codebase — not a manufactured list:
+Five decisions, each representing a real trade-off in this codebase rather than a manufactured list:
 
-1. **Fail-closed enforcement over availability.** `pep/proxy.py`'s log-or-deny: if the durable
-   event write fails, the action is denied, even if policy would have allowed it (invariant §3.4).
-   *Given up:* availability during an eventstore outage — a legitimate agent's every call is
-   blocked, not just malicious ones, until logging is restored. The alternative (allow-and-hope-
-   the-log-catches-up) makes every denial claim in this README unauditable, which is worse.
+1. **Fail-closed enforcement over availability.** `pep/proxy.py`'s log-or-deny behavior means that
+   if the durable event write fails, the action is denied even when policy would otherwise have
+   allowed it (invariant §3.4). *Given up:* availability during an eventstore outage — a legitimate
+   agent's calls can be blocked until durable logging is restored. The alternative, allowing the
+   action and hoping the event can be recorded later, weakens the auditability of enforcement
+   decisions.
 
 2. **One central PEP over direct agent connectivity.** Every tool call is forced through
-   `pep/proxy.py`'s `/v1/tool-call`; `agent-net` being `internal: true` means there is no other
-   route out, even if the agent process is fully compromised. *Given up:* the PEP is a single
-   enforcement point and a single point of failure/bottleneck — every agent action now costs a
-   real network hop and pipeline execution it wouldn't otherwise pay, and the PEP not being
-   horizontally scaled (see Limitations) caps how much traffic this topology can actually carry.
+   `pep/proxy.py`'s `/v1/tool-call`; `agent-net` is configured as `internal: true`, preventing
+   workloads attached only to that network from using an alternative external route. *Given up:*
+   the PEP becomes a central enforcement point and a potential bottleneck — every agent action
+   incurs the network hop and pipeline processing that direct connectivity would avoid. The current
+   topology is also not horizontally scaled.
 
-3. **Trust-on-first-use digest pinning over image-update convenience.** `identity/issuer.py`
-   pins whichever image digest it observes on a service's first successful attestation and refuses
-   every later attestation that doesn't match (`identity/store.py`, local SQLite, agent-net-only).
-   *Given up:* rebuilding and redeploying an agent's image now requires deliberately clearing its
-   pin first (`identity/admin_cli.py`, `docker compose exec identity python -m
-   identity.admin_cli clear-pin <service>`) — an operational step a naive redeploy will forget,
-   turning a routine image update into a self-inflicted attestation failure.
+3. **Digest pinning over frictionless image updates.** `identity/issuer.py` records and verifies the
+   image digest associated with a service during attestation, and later attestations must satisfy
+   the configured digest expectation. *Given up:* routine image replacement can require an
+   intentional digest-pin update or reset rather than automatically accepting a new image. This
+   adds an operational step, but prevents an unexpected image change from silently becoming a
+   trusted workload.
 
-4. **Stateful risk/taint scoring over stateless horizontal scalability.** `risk/scorer.py`'s
-   novelty, rate-window, and bigram tracking, and `pep/pipeline.py`'s session-taint state, are
-   in-memory and per-process. *Given up:* the PEP cannot be run as more than one replica without
-   either sharing this state externally (not built) or accepting that risk scoring/taint tracking
-   silently degrades to per-replica partial visibility — a real scaling ceiling, not a hypothetical
-   one, and the single biggest reason this isn't production-ready as-is.
+4. **Stateful risk and taint tracking over stateless horizontal scalability.**
+   `risk/scorer.py` tracks state such as novelty, rate-window, and bigram history, while
+   `pep/pipeline.py` maintains session-taint state. These mechanisms are currently in-memory and
+   process-local. *Given up:* running multiple PEP replicas without an external shared-state
+   mechanism would give each replica only a partial view of this state. That creates a real
+   scaling limitation for the current implementation and is one reason the topology is not
+   production-ready as-is.
 
-5. **Strict, explicit-deny-first policy over developer flexibility.** `policy/engine.py`: explicit
-   `DENY` beats explicit `ALLOW` beats implicit default-deny, always, with a structural taint
-   ceiling (`session_taint == "tainted"` forbids writes/secret-class data) that no individual rule
-   can override even by omission. *Given up:* a developer adding a new legitimate capability must
-   write an explicit, reviewed policy rule for it — there is no "just let this through for now"
-   escape hatch, which is the point, but it is real friction against fast iteration.
+5. **Strict explicit-deny-first policy over developer flexibility.** `policy/engine.py` evaluates
+   explicit `DENY` rules before explicit `ALLOW`, with unmatched requests falling through to
+   default-deny. The policy also includes structural taint restrictions that prevent certain
+   writes or secret-class data access when a session is tainted. *Given up:* adding a legitimate
+   new capability requires an explicit, reviewed policy rule rather than providing an informal
+   "just let this through" escape hatch. That creates friction during development, but keeps
+   capability grants deliberate and auditable.
 
 ---
 
 ## Decision lattice — implementation status
 
-`DENY < QUARANTINE < REQUIRE_APPROVAL < RATE_LIMIT < ALLOW_REDACTED < ALLOW` is the full lattice
-(`AGENTFW_CONTEXT.md` §2). Not every point on it has real behavior behind it yet — this table is
-the honest answer to "does X actually do anything," not just "does X get returned as a value":
+`DENY < QUARANTINE < REQUIRE_APPROVAL < RATE_LIMIT < ALLOW_REDACTED < ALLOW` is the full decision
+lattice (`AGENTFW_CONTEXT.md` §2). Not every point on the lattice has real enforcement behavior
+behind it yet. This table is the honest implementation status — not simply which values the policy
+engine can represent.
 
 | Decision | Status | What actually happens |
-|---|---|---|
-| `DENY` | Implemented | The action does not execute. |
-| `ALLOW` | Implemented | The action executes. |
-| `ALLOW_REDACTED` | Implemented | The action executes (DLP found something REDACT-severity). |
-| `QUARANTINE` | Implemented | The action does not execute, **and** the agent's stable identity is added to a quarantine set persisted on the eventstore (`events/app.py`'s `/quarantine` routes) — every subsequent call from it is denied with `reason=AGENT_QUARANTINED`, regardless of policy, until a human releases it. Entry is automatic (risk CRITICAL band, a threat-intel hit, or 5+ denials in 60s); exit is manual only, on purpose. Persisted (survives a PEP restart) and reachable only from egress-net. |
-| `RATE_LIMIT` | **Designed, not implemented** | The action currently executes, same as `ALLOW`. There is no actual throttling — no token bucket, no per-agent rate cap enforced against it. The lattice position and the lattice math (`min()` narrowing) are real; the "limit" part of the name is aspirational until a throttling mechanism is built. |
-| `REQUIRE_APPROVAL` | **Designed, not implemented** | The action does **not** execute — but there is no approval queue, no notification, no human-in-the-loop workflow for it to wait on. It's currently indistinguishable from a dead end: the call is held forever in effect, because nothing ever approves it. |
+| --- | --- | --- |
+| `DENY` | Implemented | The action does not execute. The decision and reason are recorded in the eventstore. |
+| `ALLOW` | Implemented | The action is permitted to proceed through the PEP. |
+| `ALLOW_REDACTED` | Implemented | The action is permitted with the DLP redaction behavior associated with the result. |
+| `QUARANTINE` | Implemented | The action does not execute, and the agent's stable identity is added to the quarantine state persisted by the eventstore (`events/app.py`'s `/quarantine` routes). Subsequent calls from a quarantined identity are denied with `reason=AGENT_QUARANTINED` until the quarantine is explicitly cleared. The quarantine state is persisted outside the PEP process and therefore survives a PEP restart. |
+| `RATE_LIMIT` | **Designed, not implemented** | The decision exists in the lattice and can be produced by the risk/scoring path, but there is currently no independent throttling mechanism such as a token bucket or enforced per-agent request-rate cap. A request receiving `RATE_LIMIT` therefore does not currently provide production-style rate limiting. |
+| `REQUIRE_APPROVAL` | **Designed, not implemented** | The decision exists as a lattice state, but there is currently no approval queue, notification mechanism, or human-in-the-loop workflow that can approve and resume the action. It should therefore be treated as an unimplemented workflow state rather than a functioning approval system. |
 
 ---
 
 ## Limitations
 
-Stated plainly, not buried:
+- **`REQUIRE_APPROVAL` has no approval workflow.** The decision state exists and can prevent the
+  action from executing, but there is currently no approval queue, notification mechanism, timeout
+  policy, or human-in-the-loop UI for approving or rejecting the request. It should therefore be
+  treated as an unimplemented workflow state rather than a functioning approval system.
 
-- **`REQUIRE_APPROVAL` has no approval workflow.** It correctly stops execution, but there is no
-  queue, timeout-to-deny, or UI for a human to actually approve or reject — a held call stays held
-  forever in the current implementation.
-- **`RATE_LIMIT` is not real throttling.** It executes the call exactly like `ALLOW`. The lattice
-  position and narrowing logic are real; the enforcement is not.
-- **The M3/M4 security evaluation is corpus replay, not production traffic.** 66 attack + 65
-  benign hand-authored records, replayed through the real pipeline code — a controlled test, not a
-  sample of real agent behavior in the wild. See the hostile-review section of the M4 report for
-  the full skeptical treatment of what this does and doesn't prove.
+- **`RATE_LIMIT` is not real throttling.** There is currently no independent token bucket,
+  per-agent request cap, or equivalent throttling mechanism enforced by the decision. The lattice
+  position and narrowing logic are real; production-style rate limiting is not implemented.
+
+- **The M3/M4 security evaluation is corpus replay, not production traffic.** The evaluation uses
+  66 hand-authored attack records and 65 benign records, replayed through the real pipeline code.
+  This is a controlled security test, not a sample of real agent behavior in the wild. See the
+  hostile-review section of the M4 report for the full skeptical treatment of what this does and
+  does not prove.
+
 - **The corpus was authored by the same process that built the firewall**, with full knowledge of
-  `policy/bundles/default.yaml`'s exact rules. A benign/attack split constructed by someone with no
-  visibility into AgentFW's internals would be a stronger, more independent test than this one.
-- **`evals/score.py`'s evaluation clock is synthetic** (`offset_seconds`, `risk.scorer.set_clock()`)
-  — necessary so a sub-second replay loop doesn't manufacture its own `RATE_ANOMALY` signal, but it
-  means rate-anomaly timing in the evaluation reflects hand-chosen inter-arrival times, not
-  observed real-world traffic patterns.
+  `policy/bundles/default.yaml`'s rules. A benign/attack split constructed independently by someone
+  without visibility into AgentFW's internals would provide stronger evidence of generalization.
+
+- **`evals/score.py`'s evaluation clock is synthetic** (`offset_seconds`,
+  `risk.scorer.set_clock()`). This is necessary so a sub-second replay loop does not manufacture
+  its own `RATE_ANOMALY` signal, but it means rate-anomaly timing in the evaluation reflects
+  hand-chosen inter-arrival times rather than observed real-world traffic patterns.
+
 - **`risk/baseline.jsonl`'s seed data is hand-authored**, not sampled from real usage, and was
-  specifically extended mid-M3 to cover destinations the eval corpus touches — see the hostile
-  review for the skeptical read of that sequencing.
-- **The threat-intel list is a tiny local file** (`threat_intel/lists/malicious_fqdns.txt`, two
-  entries) — no external feed integration, no update mechanism.
-- **No claim of complete prompt-injection detection or complete agent-compromise prevention.**
-  AgentFW's entire design thesis is the opposite: it assumes the agent *will* be compromised and
-  bounds the blast radius via identity, policy, taint, and DLP — see A6 and
-  `docs/architecture.md`'s "Prompt injection containment (not detection)" section.
-  `evals/corpus_attack.jsonl` demonstrates 66 specific attack shapes get blocked; it does not
-  demonstrate coverage of attack shapes not represented in that corpus.
-- **The live Docker performance benchmark has been run once, not repeatedly.** Real numbers now
-  exist (see [Results](#results)), but no run-to-run variance has been collected, and the
-  deployment it ran against (single-machine Docker under WSL2) is not representative of a
-  production multi-host network — see [Benchmark methodology](#benchmark-methodology).
-- **Both live-Docker attack runs' "9/9 blocked" result has two documented methodology caveats**,
-  reconfirmed independently across two separate invocations (`run_all.py` once, nine individual
-  `docker exec` calls once) (quarantine cascade contaminating per-attack mechanism attribution;
-  role-identity mismatch for attacks whose claimed role differs from the invoking container) — see
-  the Results table footnotes and `docs/verification-log.md`'s Verifications 5 and 6.
-- **A code fix for both of those caveats exists and has been live-verified** (Verification 7): 8 of
-  9 attacks genuinely attest as their required role and confirm their own claimed mechanism; A3
-  remains structurally `UNVERIFIED` by design (no deployed `admin_agent` service). See
-  [Attack verification, corrected methodology](#attack-verification-corrected-methodology-c1c2-fix).
-- **The PEP does not scale horizontally.** Risk/taint state is in-memory, per-process — see Design
-  decision 4.
+  specifically extended during M3 to cover destinations exercised by the evaluation corpus. See
+  the hostile review for the skeptical interpretation of that sequencing.
+
+- **The threat-intelligence list is a tiny local file**
+  (`threat_intel/lists/malicious_fqdns.txt`) with two entries. There is no external threat-intel
+  feed integration or automatic update mechanism.
+
+- **There is no claim of complete prompt-injection detection or complete agent-compromise
+  prevention.** AgentFW's design assumes that an agent can be compromised and focuses on bounding
+  the resulting blast radius through identity, policy, taint, and DLP. A6 demonstrates containment
+  of one indirect-prompt-injection sequence; it does not establish coverage of prompt-injection
+  techniques outside the tested scenarios.
+
+- **The live Docker performance benchmark has been run once, not repeatedly.** Real measurements
+  exist (see [Results](#results)), but no run-to-run variance has been collected. The benchmark
+  also ran on a single-machine Docker-under-WSL2 deployment, which is not representative of a
+  production multi-host network. See [Benchmark methodology](#benchmark-methodology).
+
+- **The corrected live attack verification is not a 9/9 claim.** A1, A2, and A4–A9 were genuinely
+  verified against the deployed Docker stack at their claimed mechanisms, giving **8 of 9**
+  independently verified attacks. A3 remains `UNVERIFIED` by design because the required
+  `admin_agent` workload has no deployed Compose service. A10 is a separate quarantine-cascade
+  demonstration and its latest run did not confirm the intended cascade. See
+  [Attack verification, corrected methodology](#attack-verification-corrected-methodology-c1c2-fix)
+  and `docs/verification-log.md`.
+
+- **The PEP does not currently scale horizontally.** Risk and session-taint state are in-memory
+  and process-local. Running multiple PEP replicas without an external shared-state mechanism
+  would give replicas only partial visibility of that state. See Design decision 4.
+
 - **Identity's Docker-socket attestation gives the `identity` container visibility into every
-  container on the host's Docker daemon**, not just this project's — a real, accepted trade-off
-  for avoiding Kubernetes-style infrastructure this repo's scope excludes (`AGENTFW_CONTEXT.md` §2).
+  container on the host's Docker daemon**, not just containers belonging to this project. This is
+  an intentional trade-off in the current architecture: it avoids requiring Kubernetes-style
+  infrastructure while accepting broader Docker-daemon visibility
+  (`AGENTFW_CONTEXT.md` §2).
+
+- **The current deployment is a development/demo topology, not a production deployment.** There
+  is no horizontal PEP scaling, no external shared state for risk/taint tracking, no external
+  threat-intelligence feed, and no production-grade approval workflow. The project's security
+  evidence should therefore be interpreted as reproducible prototype-level enforcement evidence,
+  not as a claim of production readiness.
 
 ---
 
-## What I'd do next
+## Future Goals:
 
-Prioritized by what the limitations above actually point at, not a wishlist:
+1. **Approval workflow for `REQUIRE_APPROVAL`** — build an approval queue, a timeout-to-deny
+   policy, and a human-facing interface for approving or rejecting requests. This is currently
+   the least-finished decision state in the lattice.
 
-1. **Approval workflow for `REQUIRE_APPROVAL`** — a queue, a timeout-to-deny, and something for a
-   human to click. The single least-finished point on the lattice.
-2. **Real rate limiting for `RATE_LIMIT`** — a token bucket or per-agent cap actually enforced, not
-   just a lattice position.
-3. **Stronger identity lifecycle** — key rotation for the issuer's signing key (currently
-   regenerated fresh on every restart, invalidating every outstanding token), and a real
-   alternative to Docker-socket attestation for anywhere but a single trusted host.
-4. **A larger, independently-sourced evaluation corpus** — ideally authored or reviewed by someone
-   without visibility into `policy/bundles/default.yaml`'s exact rules, to test generalization
-   rather than fit.
-5. **External threat-intelligence feed integration**, replacing the two-entry local list.
-6. **Distributed state for risk/taint scoring**, removing the single-replica ceiling (Design
-   decision 4) — likely a shared store (Redis or similar) once horizontal scaling is actually
-   needed, not before.
-7. **Observability**: metrics/tracing beyond the structured JSON event log and Streamlit dashboard
-   — a real time-series backend for the latency/decision data already being captured.
-8. **Production hardening**: signing-key rotation, secrets management beyond `.env`, and replacing
-   the Docker-socket attestation trust model before running anywhere but a single trusted host.
-9. **Performance scaling**: once the PEP can run more than one replica (item 6), re-run the
-   benchmark methodology above under real concurrent multi-agent load, not the single-container
-   controlled load this milestone's benchmark targets.
+2. **Real rate limiting for `RATE_LIMIT`** — implement an enforced token bucket, per-agent quota,
+   or equivalent throttling mechanism so `RATE_LIMIT` represents actual request control rather
+   than only a lattice state.
+
+3. **Stronger identity lifecycle** — add issuer signing-key rotation with a defined transition
+   period and key-versioning strategy, and develop an attestation mechanism that does not depend
+   on direct access to a host Docker socket when deploying beyond a single trusted host.
+
+4. **A larger, independently sourced evaluation corpus** — add attack and benign records authored
+   or reviewed independently of `policy/bundles/default.yaml` so the evaluation tests
+   generalization rather than primarily testing scenarios designed with knowledge of the policy.
+
+5. **External threat-intelligence integration** — replace the small local threat-intelligence list
+   with an updateable external feed and define how feed freshness, failures, and trust are handled.
+
+6. **Distributed state for risk and taint scoring** — introduce shared state once horizontal PEP
+   scaling is required, so novelty, rate-window, bigram, and session-taint information remains
+   consistent across replicas. A shared store such as Redis could be evaluated at that stage rather
+   than introducing distributed infrastructure prematurely.
+
+7. **Observability** — extend the existing structured event log and Streamlit dashboard with
+   production-oriented metrics, tracing, and a time-series backend for latency, decisions,
+   denials, quarantine events, and other operational signals.
+
+8. **Production hardening** — strengthen secrets management beyond `.env`, formalize signing-key
+   lifecycle management, harden administrative surfaces, and replace the current Docker-socket
+   attestation trust model before deploying beyond a single trusted host.
+
+9. **Performance scaling** — after the PEP can run with shared state across multiple replicas,
+   repeat the benchmark under sustained concurrent multi-agent load and measure throughput,
+   tail latency, and run-to-run variance rather than relying only on the current controlled
+   single-container benchmark.
 
 ---
-
-## Project status
-
-Milestone: **M4 complete — this is the final milestone.** M1–M3 built the enforcement pipeline,
-identity, policy engine, risk scoring, quarantine, nine attack demonstrations, the evaluation
-harness, and the dashboard. M4 added: the live-Docker PEP benchmark tool (`evals/bench_pep.py`,
-now run for real — see [Results](#results)), this README, `docs/threat-model.md`, `docs/demo.md`,
-a hostile self-review, and final resume bullets (`AgentFW_Build_Plan_v2.md` §9). See
-`docs/verification-log.md` for the complete real-command/real-output verification history,
-including two real findings inside a real "9/9 blocked" pass (Verification 5), a second
-independent run reconfirming both from a different angle, and the first real live-Docker
-performance numbers together with two new positive confirmations — digest pins matching deployed
-images, and quarantine release working end-to-end (Verification 6) — all reported here rather than
-smoothed over.
-
-A further round fixed the execution model behind those two findings (per-role container dispatch,
-a real quarantine reset before each independent attack, a tenth script — A10 — that demonstrates
-the cascade on purpose): see [Attack verification, corrected methodology](#attack-verification-corrected-methodology-c1c2-fix) and `docs/verification-log.md`'s "C1/C2 remediation"
-section and Verification 7. That fix passes the full test suite and — stated as plainly as
-everything else in this section — **has now been run against a live Docker deployment**: 8 of 9
-attacks genuinely verified at their own claimed mechanism, A3 correctly and structurally
-`UNVERIFIED` by design, A10's cascade confirmed live. Getting there surfaced three more real bugs
-(a host-side import bug, a Docker-image packaging gap, a wrong Compose command against a one-shot
-container), each found by an actual run attempt and documented, not smoothed over.
