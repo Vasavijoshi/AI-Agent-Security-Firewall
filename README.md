@@ -32,13 +32,15 @@ a pitch deck.
 
 ## CI
 
-[![CI](https://github.com/OWNER/agentfw/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
+[![CI](https://github.com/Vasavijoshi/AI-Agent-Security-Firewall/actions/workflows/ci.yml/badge.svg)](https://github.com/Vasavijoshi/AI-Agent-Security-Firewall/actions/workflows/ci.yml)
 
-**Honest status:** the workflow (`.github/workflows/ci.yml`) is real — three jobs (lint, policy
-compile, test) that run on every push/PR with `LLM_PROVIDER=mock`, no API key required. It has
-never actually run: this repository has no configured `git remote` and has never been pushed to
-GitHub, so the badge above will 404 until it is. Swap `OWNER/agentfw` for the real path once it's
-pushed, or the badge should be honestly removed rather than left pointing at nothing.
+**Honest status:** the workflow (`.github/workflows/ci.yml`) is real and currently passing. It runs three jobs on every push and pull request:
+
+- **Lint** — `ruff check .` and `ruff format --check .`
+- **Policy** — compiles `policy/bundles/default.yaml`
+- **Test** — runs the full `pytest tests/ -v` suite after lint and policy checks pass
+
+The workflow uses `LLM_PROVIDER=mock`, so the CI suite requires no external API key.
 
 ---
 
