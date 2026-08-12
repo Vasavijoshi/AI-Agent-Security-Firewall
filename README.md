@@ -423,48 +423,12 @@ originates inside the deployed Docker network and can genuinely attest as `suppo
 
 ## Architecture
 
-```
-┌─────────────────── agent-net  (internal: true — NO route to the internet) ───────────────────┐
-│                                                                                                │
-│   ┌────────────┐          HTTP_PROXY /            ┌────────────────────────────┐              │
-│   │   agent    │ ───────  HTTPS_PROXY=pep:8080 ──▶ │            pep             │              │
-│   │ (loop.py,  │                                   │  (dual-homed — the ONLY    │              │
-│   │  tools.py, │                                   │  container on both nets)   │              │
-│   │  providers)│                                   └──────────────┬─────────────┘              │
-│   └────────────┘                                                  │                             │
-│   finance-agent, support-agent: same pattern, same network        │                             │
-│   identity: agent-net only — local SQLite digest pins, no route   │                             │
-│   out (see docs/architecture.md's round-5 note)                   │                             │
-└────────────────────────────────────────────────────────────────────┼─────────────────────────────┘
-                                                                     │  crosses into egress-net
-                                                                     ▼
-┌─────────────────────────── egress-net  (bridge — has internet route) ─────────────────────────┐
-│                                                                                                 │
-│      ┌────────────┐            ┌───────────────┐             allowlisted external              │
-│      │ eventstore │◀───────────│  pep (2nd nic) │────────────▶ destinations                     │
-│      │ (SQLite,   │            └───────────────┘                                                │
-│      │  quarantine│                                                                              │
-│      │  state)    │                                                                              │
-│      └─────┬──────┘                                                                              │
-│            │                                                                                     │
-│      ┌─────▼──────┐                                                                              │
-│      │ dashboard  │  (reads eventstore only, never touches agent-net)                            │
-│      └────────────┘                                                                              │
-│                                                                                                   │
-└───────────────────────────────────────────────────────────────────────────────────────────────┘
+![AgentFW Architecture](docs/images/agentfw-architecture.png)
 
-Direct bypass path (pep/bypass_proxy.py, :8081): HTTP_PROXY/HTTPS_PROXY point here as a catch-all.
-Any code path that tries a raw outbound call anyway hits this listener and gets DENY,
-reason=BYPASS_ATTEMPTED — loud and attributable, not a silent connection failure.
-
-East-west (agent.invoke, policy/engine.py's evaluate_east_west()): a different question from the
-main rule table — "may workload A invoke workload B," not "may role R reach destination D." The
-default bundle's east_west_rules list is empty: no role currently has a charter to invoke another,
-so every cross-agent call hits default-deny.
-```
-
-`pep` is the only container on both networks — this is the actual current topology, matched to
-`docker-compose.yml`, not aspirational. See [docs/architecture.md](docs/architecture.md) for the
+AgentFW places a Policy Enforcement Point (PEP) between AI agents and
+their external tool destinations. Every request passes through identity,
+normalization, policy, threat intelligence, DLP, risk scoring, decision,
+and durable logging before execution. See [docs/architecture.md](docs/architecture.md) for the
 full 8-stage pipeline diagram and the reasoning behind each element.
 
 ---
